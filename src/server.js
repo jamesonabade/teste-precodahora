@@ -35,27 +35,27 @@ function addLog(msg) {
   console.log(entry);
 }
 
-// ==================== 1. STATUS GERAL ====================
+// ==================== 1. STATUS GERAL DO SISTEMA ====================
 app.get('/api/status', async (req, res) => {
   try {
     const counts = await pool.query(`
       SELECT 
-        (SELECT COUNT(*) FROM estabelecimentos WHERE ativo = TRUE) as total_estabelecimentos,
-        (SELECT COUNT(*) FROM estabelecimentos WHERE ativo = TRUE AND cnpj IS NOT NULL) as total_estabelecimentos_com_cnpj,
-        (SELECT COUNT(*) FROM produtos_catalogo WHERE ativo = TRUE) as total_produtos,
-        (SELECT COUNT(*) FROM precos_coletados WHERE preco_final_coletado IS NOT NULL AND preco_final_coletado > 0) as total_precos_coletados,
-        (SELECT COUNT(*) FROM precos_coletados WHERE preco_final_coletado IS NOT NULL AND preco_final_coletado > 0 AND DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE) as total_precos_hoje,
-        (SELECT COUNT(*) FROM produtos_catalogo pc WHERE pc.ativo = TRUE AND pc.id NOT IN (
-          SELECT DISTINCT produto_id FROM precos_coletados 
+        (SELECT COUNT(*) FROM tb_estabelecimento WHERE status_ativo = TRUE) as total_estabelecimentos,
+        (SELECT COUNT(*) FROM tb_estabelecimento WHERE status_ativo = TRUE AND cnpj IS NOT NULL) as total_estabelecimentos_com_cnpj,
+        (SELECT COUNT(*) FROM tb_produto_dieese WHERE status_ativo = TRUE) as total_produtos,
+        (SELECT COUNT(*) FROM tb_coleta_automatizada WHERE preco_extraido IS NOT NULL AND preco_extraido > 0) as total_precos_coletados,
+        (SELECT COUNT(*) FROM tb_coleta_automatizada WHERE preco_extraido IS NOT NULL AND preco_extraido > 0 AND DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE) as total_precos_hoje,
+        (SELECT COUNT(*) FROM tb_produto_dieese p WHERE p.status_ativo = TRUE AND p.id_produto NOT IN (
+          SELECT DISTINCT id_produto FROM tb_coleta_automatizada 
           WHERE DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
           AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
           AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
-          AND preco_final_coletado IS NOT NULL
+          AND preco_extraido IS NOT NULL
         )) as total_pendentes_hoje,
-        (SELECT COUNT(*) FROM precos_coletados WHERE status_conferencia = 'CONFERIDO') as total_conferidos,
-        (SELECT COUNT(*) FROM precos_coletados WHERE alerta_outlier = TRUE) as total_alertas_outliers,
-        (SELECT COUNT(*) FROM historico_medias) as total_medias_historicas,
-        (SELECT MAX(data_coleta) FROM precos_coletados WHERE preco_final_coletado IS NOT NULL) as ultima_coleta_data
+        (SELECT COUNT(*) FROM tb_validacao_critica WHERE decisao = 'APROVADO') as total_conferidos,
+        (SELECT COUNT(*) FROM tb_coleta_automatizada WHERE alerta_outlier = TRUE) as total_alertas_outliers,
+        (SELECT COUNT(*) FROM tb_produto_dieese WHERE status_ativo = TRUE) as total_medias_historicas,
+        (SELECT MAX(data_hora_extracao) FROM tb_coleta_automatizada WHERE preco_extraido IS NOT NULL) as ultima_coleta_data
     `);
 
     res.json({
@@ -68,19 +68,37 @@ app.get('/api/status', async (req, res) => {
   }
 });
 
-// ==================== 2. CRUD DE PRODUTOS ====================
+// ==================== 2. CATÁLOGO DE PRODUTOS DIEESE (tb_produto_dieese) ====================
 // Listar produtos
 app.get('/api/produtos', async (req, res) => {
   try {
     const { categoria, busca, ativo } = req.query;
-    let sql = 'SELECT * FROM produtos_catalogo WHERE 1=1';
+    let sql = `
+      SELECT 
+        id_produto AS id,
+        id_produto,
+        codigo_dieese AS codigo_produto,
+        codigo_dieese,
+        descricao_item AS marca_especificacao,
+        descricao_item AS item_cesta,
+        descricao_item,
+        codigo_barras AS gtin,
+        codigo_barras,
+        unidade_medida,
+        categoria,
+        regra_calculo,
+        status_ativo AS ativo,
+        status_ativo
+      FROM tb_produto_dieese 
+      WHERE 1=1
+    `;
     const params = [];
 
     if (ativo !== undefined) {
       params.push(ativo === 'true');
-      sql += ` AND ativo = $${params.length}`;
+      sql += ` AND status_ativo = $${params.length}`;
     } else {
-      sql += ' AND ativo = TRUE';
+      sql += ' AND status_ativo = TRUE';
     }
 
     if (categoria) {
@@ -90,12 +108,12 @@ app.get('/api/produtos', async (req, res) => {
 
     if (busca) {
       params.push(`%${busca.toLowerCase()}%`);
-      sql += ` AND (LOWER(marca_especificacao) LIKE $${params.length} OR LOWER(item_cesta) LIKE $${params.length} OR gtin LIKE $${params.length} OR codigo_produto LIKE $${params.length})`;
+      sql += ` AND (LOWER(descricao_item) LIKE $${params.length} OR LOWER(codigo_dieese) LIKE $${params.length} OR codigo_barras LIKE $${params.length})`;
     }
 
-    sql += ' ORDER BY codigo_produto ASC, id ASC';
+    sql += ' ORDER BY codigo_dieese ASC, id_produto ASC';
     const result = await pool.query(sql, params);
-    res.json({ success: true, data: result.rows });
+    res.json({ success: true, count: result.rows.length, data: result.rows });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -104,29 +122,38 @@ app.get('/api/produtos', async (req, res) => {
 // Criar produto
 app.post('/api/produtos', async (req, res) => {
   try {
-    const { codigo_produto, categoria, item_cesta, marca_especificacao, gtin, tipo_busca, termo_busca, unidade_medida, regra_calculo } = req.body;
+    const { codigo_produto, codigo_dieese, categoria, item_cesta, marca_especificacao, descricao_item, gtin, codigo_barras, unidade_medida, regra_calculo } = req.body;
 
-    if (!codigo_produto || !categoria || !marca_especificacao) {
-      return res.status(400).json({ success: false, message: 'Código, categoria e marca/especificação são obrigatórios.' });
+    const cod = codigo_dieese || codigo_produto;
+    const desc = descricao_item || marca_especificacao || item_cesta;
+    const gtinVal = codigo_barras || gtin || null;
+
+    if (!cod || !desc) {
+      return res.status(400).json({ success: false, message: 'Código DIEESE e descrição do item são obrigatórios.' });
     }
 
-    const tipo = tipo_busca || (gtin && /^\d+$/.test(gtin) ? 'GTIN' : 'TERMO');
-    const termo = termo_busca || (tipo === 'TERMO' ? marca_especificacao : '');
-
     const result = await pool.query(`
-      INSERT INTO produtos_catalogo (
-        codigo_produto, categoria, item_cesta, marca_especificacao, gtin, tipo_busca, termo_busca, unidade_medida, regra_calculo
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING *
+      INSERT INTO tb_produto_dieese (
+        codigo_dieese, descricao_item, codigo_barras, unidade_medida, categoria, regra_calculo, status_ativo
+      ) VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+      RETURNING 
+        id_produto AS id,
+        id_produto,
+        codigo_dieese AS codigo_produto,
+        codigo_dieese,
+        descricao_item AS marca_especificacao,
+        descricao_item,
+        codigo_barras AS gtin,
+        unidade_medida,
+        categoria,
+        regra_calculo,
+        status_ativo AS ativo
     `, [
-      codigo_produto,
-      categoria,
-      item_cesta || categoria,
-      marca_especificacao,
-      gtin || null,
-      tipo,
-      termo,
+      cod,
+      desc,
+      gtinVal,
       unidade_medida || 'UN',
+      categoria || 'Geral',
       regra_calculo || 'PADRAO'
     ]);
 
@@ -140,31 +167,40 @@ app.post('/api/produtos', async (req, res) => {
 app.put('/api/produtos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { codigo_produto, categoria, item_cesta, marca_especificacao, gtin, tipo_busca, termo_busca, unidade_medida, regra_calculo, ativo } = req.body;
+    const { codigo_produto, codigo_dieese, categoria, item_cesta, marca_especificacao, descricao_item, gtin, codigo_barras, unidade_medida, regra_calculo, ativo } = req.body;
+
+    const cod = codigo_dieese || codigo_produto;
+    const desc = descricao_item || marca_especificacao || item_cesta;
+    const gtinVal = codigo_barras || gtin;
 
     const result = await pool.query(`
-      UPDATE produtos_catalogo SET
-        codigo_produto = COALESCE($1, codigo_produto),
-        categoria = COALESCE($2, categoria),
-        item_cesta = COALESCE($3, item_cesta),
-        marca_especificacao = COALESCE($4, marca_especificacao),
-        gtin = $5,
-        tipo_busca = COALESCE($6, tipo_busca),
-        termo_busca = COALESCE($7, termo_busca),
-        unidade_medida = COALESCE($8, unidade_medida),
-        regra_calculo = COALESCE($9, regra_calculo),
-        ativo = COALESCE($10, ativo)
-      WHERE id = $11
-      RETURNING *
+      UPDATE tb_produto_dieese SET
+        codigo_dieese = COALESCE($1, codigo_dieese),
+        descricao_item = COALESCE($2, descricao_item),
+        codigo_barras = $3,
+        unidade_medida = COALESCE($4, unidade_medida),
+        categoria = COALESCE($5, categoria),
+        regra_calculo = COALESCE($6, regra_calculo),
+        status_ativo = COALESCE($7, status_ativo)
+      WHERE id_produto = $8
+      RETURNING 
+        id_produto AS id,
+        id_produto,
+        codigo_dieese AS codigo_produto,
+        codigo_dieese,
+        descricao_item AS marca_especificacao,
+        descricao_item,
+        codigo_barras AS gtin,
+        unidade_medida,
+        categoria,
+        regra_calculo,
+        status_ativo AS ativo
     `, [
-      codigo_produto,
-      categoria,
-      item_cesta,
-      marca_especificacao,
-      gtin || null,
-      tipo_busca,
-      termo_busca,
+      cod,
+      desc,
+      gtinVal !== undefined ? gtinVal : null,
       unidade_medida,
+      categoria,
       regra_calculo,
       ativo,
       id
@@ -184,36 +220,54 @@ app.put('/api/produtos/:id', async (req, res) => {
 app.delete('/api/produtos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query('UPDATE produtos_catalogo SET ativo = FALSE WHERE id = $1', [id]);
+    await pool.query('UPDATE tb_produto_dieese SET status_ativo = FALSE WHERE id_produto = $1', [id]);
     res.json({ success: true, message: 'Produto desativado com sucesso.' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ==================== 3. CRUD DE ESTABELECIMENTOS ====================
+// ==================== 3. CADASTRO DE ESTABELECIMENTOS (tb_estabelecimento) ====================
 // Listar estabelecimentos
 app.get('/api/estabelecimentos', async (req, res) => {
   try {
-    const { semana, ativo } = req.query;
-    let sql = 'SELECT * FROM estabelecimentos WHERE 1=1';
+    const { semana, busca, ativo } = req.query;
+    let sql = `
+      SELECT 
+        id_estabelecimento AS id,
+        id_estabelecimento,
+        codigo_externo AS codigo_planilha,
+        codigo_externo,
+        nome,
+        bairro,
+        municipio,
+        uf,
+        cnpj,
+        endereco,
+        endereco AS endereco_completo,
+        lat_long,
+        status_ativo AS ativo,
+        status_ativo
+      FROM tb_estabelecimento 
+      WHERE 1=1
+    `;
     const params = [];
 
     if (ativo !== undefined) {
       params.push(ativo === 'true');
-      sql += ` AND ativo = $${params.length}`;
+      sql += ` AND status_ativo = $${params.length}`;
     } else {
-      sql += ' AND ativo = TRUE';
+      sql += ' AND status_ativo = TRUE';
     }
 
-    if (semana) {
-      params.push(Number(semana));
-      sql += ` AND semana_coleta = $${params.length}`;
+    if (busca) {
+      params.push(`%${busca.toLowerCase()}%`);
+      sql += ` AND (LOWER(nome) LIKE $${params.length} OR LOWER(codigo_externo) LIKE $${params.length} OR LOWER(bairro) LIKE $${params.length} OR cnpj LIKE $${params.length})`;
     }
 
-    sql += ' ORDER BY id ASC';
+    sql += ' ORDER BY id_estabelecimento ASC';
     const result = await pool.query(sql, params);
-    res.json({ success: true, data: result.rows });
+    res.json({ success: true, count: result.rows.length, data: result.rows });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -222,30 +276,41 @@ app.get('/api/estabelecimentos', async (req, res) => {
 // Criar estabelecimento
 app.post('/api/estabelecimentos', async (req, res) => {
   try {
-    const { codigo_planilha, nome, bairro, municipio, uf, cnpj, semana_coleta, dia_semana, pesquisador, critica } = req.body;
+    const { codigo_planilha, codigo_externo, nome, bairro, municipio, uf, cnpj, endereco, endereco_completo, lat_long } = req.body;
+    const cod = codigo_externo || codigo_planilha;
+    const end = endereco || endereco_completo || '';
 
-    if (!codigo_planilha || !nome) {
-      return res.status(400).json({ success: false, message: 'Código da planilha e nome do mercado são obrigatórios.' });
+    if (!cod || !nome) {
+      return res.status(400).json({ success: false, message: 'Código externo e nome são obrigatórios.' });
     }
 
-    const cnpjLimpo = cnpj ? String(cnpj).replace(/\D/g, '') : null;
-
     const result = await pool.query(`
-      INSERT INTO estabelecimentos (
-        codigo_planilha, nome, bairro, municipio, uf, cnpj, semana_coleta, dia_semana, pesquisador, critica
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING *
+      INSERT INTO tb_estabelecimento (
+        codigo_externo, nome, bairro, municipio, uf, cnpj, endereco, lat_long, status_ativo
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+      RETURNING 
+        id_estabelecimento AS id,
+        id_estabelecimento,
+        codigo_externo AS codigo_planilha,
+        codigo_externo,
+        nome,
+        bairro,
+        municipio,
+        uf,
+        cnpj,
+        endereco,
+        endereco AS endereco_completo,
+        lat_long,
+        status_ativo AS ativo
     `, [
-      codigo_planilha,
+      cod,
       nome,
-      bairro || 'Centro',
+      bairro || null,
       municipio || 'Vitória da Conquista',
       uf || 'BA',
-      cnpjLimpo,
-      Number(semana_coleta) || 1,
-      dia_semana || 'Segunda-Feira',
-      pesquisador || '',
-      critica || ''
+      cnpj ? String(cnpj).replace(/\D/g, '') : null,
+      end,
+      lat_long || null
     ]);
 
     res.status(201).json({ success: true, data: result.rows[0] });
@@ -258,35 +323,46 @@ app.post('/api/estabelecimentos', async (req, res) => {
 app.put('/api/estabelecimentos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { codigo_planilha, nome, bairro, municipio, cnpj, semana_coleta, dia_semana, pesquisador, critica, ativo } = req.body;
-
-    const cnpjLimpo = cnpj !== undefined ? (cnpj ? String(cnpj).replace(/\D/g, '') : null) : undefined;
+    const { codigo_planilha, codigo_externo, nome, bairro, municipio, uf, cnpj, endereco, endereco_completo, lat_long, ativo } = req.body;
+    const cod = codigo_externo || codigo_planilha;
+    const end = endereco || endereco_completo;
 
     const result = await pool.query(`
-      UPDATE estabelecimentos SET
-        codigo_planilha = COALESCE($1, codigo_planilha),
+      UPDATE tb_estabelecimento SET
+        codigo_externo = COALESCE($1, codigo_externo),
         nome = COALESCE($2, nome),
         bairro = COALESCE($3, bairro),
         municipio = COALESCE($4, municipio),
-        cnpj = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE cnpj END,
-        semana_coleta = COALESCE($6, semana_coleta),
-        dia_semana = COALESCE($7, dia_semana),
-        pesquisador = COALESCE($8, pesquisador),
-        critica = COALESCE($9, critica),
-        ativo = COALESCE($10, ativo),
+        uf = COALESCE($5, uf),
+        cnpj = $6,
+        endereco = COALESCE($7, endereco),
+        lat_long = COALESCE($8, lat_long),
+        status_ativo = COALESCE($9, status_ativo),
         updated_at = NOW()
-      WHERE id = $11
-      RETURNING *
+      WHERE id_estabelecimento = $10
+      RETURNING 
+        id_estabelecimento AS id,
+        id_estabelecimento,
+        codigo_externo AS codigo_planilha,
+        codigo_externo,
+        nome,
+        bairro,
+        municipio,
+        uf,
+        cnpj,
+        endereco,
+        endereco AS endereco_completo,
+        lat_long,
+        status_ativo AS ativo
     `, [
-      codigo_planilha,
+      cod,
       nome,
       bairro,
       municipio,
-      cnpjLimpo,
-      semana_coleta ? Number(semana_coleta) : null,
-      dia_semana,
-      pesquisador,
-      critica,
+      uf,
+      cnpj ? String(cnpj).replace(/\D/g, '') : null,
+      end,
+      lat_long,
       ativo,
       id
     ]);
@@ -305,80 +381,92 @@ app.put('/api/estabelecimentos/:id', async (req, res) => {
 app.delete('/api/estabelecimentos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query('UPDATE estabelecimentos SET ativo = FALSE WHERE id = $1', [id]);
+    await pool.query('UPDATE tb_estabelecimento SET status_ativo = FALSE WHERE id_estabelecimento = $1', [id]);
     res.json({ success: true, message: 'Estabelecimento desativado com sucesso.' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ==================== 4. MATRIZ CONSOLIDADA DIEESE ====================
+// ==================== 4. MATRIZ CONSOLIDADA DIEESE (tb_coleta_automatizada + tb_validacao_critica) ====================
 app.get('/api/matriz', async (req, res) => {
   try {
-    const { semana, categoria, mercado, diaSemana, dataColeta, dataNfe } = req.query;
+    const { categoria, mercado, dataColeta, dataNfe } = req.query;
 
-    // Mercados com endereço completo
+    // 1. Mercados
     let estabSql = `
       SELECT 
-        id, codigo_planilha, nome, bairro, municipio, cnpj, 
-        COALESCE(endereco_completo, endereco, '') AS endereco_completo,
-        COALESCE(endereco, endereco_completo, '') AS endereco,
-        semana_coleta, dia_semana, critica 
-      FROM estabelecimentos 
-      WHERE ativo = TRUE
+        id_estabelecimento AS id,
+        codigo_externo AS codigo_planilha,
+        nome, bairro, municipio, cnpj, 
+        COALESCE(endereco, '') AS endereco_completo,
+        COALESCE(endereco, '') AS endereco,
+        1 AS semana_coleta,
+        'Segunda-feira' AS dia_semana
+      FROM tb_estabelecimento 
+      WHERE status_ativo = TRUE
     `;
     const estabParams = [];
-    if (semana) {
-      estabParams.push(Number(semana));
-      estabSql += ` AND semana_coleta = $${estabParams.length}`;
-    }
     if (mercado) {
       estabParams.push(mercado);
-      estabSql += ` AND (codigo_planilha = $${estabParams.length} OR id::text = $${estabParams.length})`;
+      estabSql += ` AND (codigo_externo = $${estabParams.length} OR id_estabelecimento::text = $${estabParams.length})`;
     }
-    if (diaSemana) {
-      estabParams.push(diaSemana);
-      estabSql += ` AND dia_semana = $${estabParams.length}`;
-    }
-    estabSql += ' ORDER BY id ASC';
+    estabSql += ' ORDER BY id_estabelecimento ASC';
     const estabs = (await pool.query(estabSql, estabParams)).rows;
 
-    // Produtos
+    // 2. Produtos
     let prodSql = `
       SELECT 
-        p.id, p.codigo_produto, p.categoria, p.item_cesta, p.marca_especificacao, p.gtin, p.regra_calculo,
-        hm.preco_medio AS media_anterior
-      FROM produtos_catalogo p
-      LEFT JOIN historico_medias hm ON hm.produto_id = p.id
-      WHERE p.ativo = TRUE
+        p.id_produto AS id,
+        p.codigo_dieese AS codigo_produto,
+        p.categoria,
+        p.descricao_item AS item_cesta,
+        p.descricao_item AS marca_especificacao,
+        p.codigo_barras AS gtin,
+        p.regra_calculo,
+        NULL AS media_anterior
+      FROM tb_produto_dieese p
+      WHERE p.status_ativo = TRUE
     `;
     const prodParams = [];
     if (categoria) {
       prodParams.push(categoria);
       prodSql += ` AND p.categoria = $${prodParams.length}`;
     }
-    prodSql += ' ORDER BY p.codigo_produto ASC, p.id ASC';
+    prodSql += ' ORDER BY p.codigo_dieese ASC, p.id_produto ASC';
     const produtos = (await pool.query(prodSql, prodParams)).rows;
 
-    // Preços com informações temporais e filtros de data opcionais
+    // 3. Preços mais recentes de cada par (produto, estabelecimento)
     let precosSql = `
       SELECT 
-        id, estabelecimento_id, produto_id, 
-        preco_bruto_nfe, preco_liquido_nfe, preco_final_coletado,
-        alerta_outlier, motivo_alerta,
-        status_conferencia, conferido_por, conferido_em, observacao_conferencia,
-        data_coleta, data_emissao_nfe, intervalo_tempo
-      FROM precos_coletados
+        ca.id_coleta AS id,
+        ca.id_estabelecimento AS estabelecimento_id,
+        ca.id_produto AS produto_id,
+        COALESCE(vc.preco_final_validado, ca.preco_extraido) AS preco_final_coletado,
+        ca.preco_extraido AS preco_bruto_nfe,
+        ca.preco_extraido AS preco_liquido_nfe,
+        ca.alerta_outlier,
+        ca.motivo_alerta,
+        COALESCE(vc.decisao, ca.status_validacao) AS status_conferencia,
+        u.nome AS conferido_por,
+        vc.data_hora_validacao AS conferido_em,
+        vc.observacoes AS observacao_conferencia,
+        ca.data_hora_extracao AS data_coleta,
+        ca.data_emissao_nfe,
+        ca.link_comprovante_nfe
+      FROM tb_coleta_automatizada ca
+      LEFT JOIN tb_validacao_critica vc ON vc.id_coleta = ca.id_coleta
+      LEFT JOIN tb_usuario u ON u.id_usuario = vc.id_usuario_validador
       WHERE 1=1
     `;
     const precosParams = [];
     if (dataColeta) {
       precosParams.push(dataColeta);
-      precosSql += ` AND DATE(data_coleta) = $${precosParams.length}::date`;
+      precosSql += ` AND DATE(ca.data_hora_extracao) = $${precosParams.length}::date`;
     }
     if (dataNfe) {
       precosParams.push(dataNfe);
-      precosSql += ` AND DATE(data_emissao_nfe) = $${precosParams.length}::date`;
+      precosSql += ` AND DATE(ca.data_emissao_nfe) = $${precosParams.length}::date`;
     }
 
     const precosRes = await pool.query(precosSql, precosParams);
@@ -402,11 +490,11 @@ app.get('/api/matriz', async (req, res) => {
   }
 });
 
-// Descartar / Excluir Preço Incoerente
+// Descartar / Excluir Preço
 app.delete('/api/precos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM precos_coletados WHERE id = $1 RETURNING *', [id]);
+    const result = await pool.query('DELETE FROM tb_coleta_automatizada WHERE id_coleta = $1 RETURNING *', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Preço não encontrado.' });
     }
@@ -416,26 +504,42 @@ app.delete('/api/precos/:id', async (req, res) => {
   }
 });
 
-// ==================== 5. DETALHES DE AUDITORIA ====================
+// Detalhes de Auditoria
 app.get('/api/precos/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(`
       SELECT 
-        pc.*,
-        e.codigo_planilha AS mercado_codigo,
+        ca.id_coleta AS id,
+        ca.id_estabelecimento AS estabelecimento_id,
+        ca.id_produto AS produto_id,
+        ca.preco_extraido AS preco_final_coletado,
+        ca.preco_extraido AS preco_bruto_nfe,
+        ca.data_emissao_nfe,
+        ca.data_hora_extracao AS data_coleta,
+        ca.link_comprovante_nfe,
+        ca.status_validacao AS status_conferencia,
+        ca.alerta_outlier,
+        ca.motivo_alerta,
+        ca.raw_payload,
+        e.codigo_externo AS mercado_codigo,
         e.nome AS mercado_nome,
         e.bairro AS mercado_bairro,
-        p.item_cesta,
-        p.marca_especificacao,
-        p.codigo_produto,
+        p.descricao_item AS item_cesta,
+        p.descricao_item AS marca_especificacao,
+        p.codigo_dieese AS codigo_produto,
         p.categoria,
-        hm.preco_medio AS media_anterior
-      FROM precos_coletados pc
-      JOIN estabelecimentos e ON e.id = pc.estabelecimento_id
-      JOIN produtos_catalogo p ON p.id = pc.produto_id
-      LEFT JOIN historico_medias hm ON hm.produto_id = p.id
-      WHERE pc.id = $1
+        vc.decisao,
+        vc.preco_final_validado,
+        vc.observacoes AS observacao_conferencia,
+        vc.data_hora_validacao AS conferido_em,
+        u.nome AS conferido_por
+      FROM tb_coleta_automatizada ca
+      JOIN tb_estabelecimento e ON e.id_estabelecimento = ca.id_estabelecimento
+      JOIN tb_produto_dieese p ON p.id_produto = ca.id_produto
+      LEFT JOIN tb_validacao_critica vc ON vc.id_coleta = ca.id_coleta
+      LEFT JOIN tb_usuario u ON u.id_usuario = vc.id_usuario_validador
+      WHERE ca.id_coleta = $1
     `, [id]);
 
     if (result.rows.length === 0) {
@@ -448,56 +552,67 @@ app.get('/api/precos/:id', async (req, res) => {
   }
 });
 
-// ==================== 6. CONFERÊNCIA E CRÍTICA HUMANA ====================
+// Conferência e Crítica Humana (grava em tb_validacao_critica e atualiza tb_coleta_automatizada)
 app.post('/api/precos/:id/critica', async (req, res) => {
   try {
     const { id } = req.params;
     const { precoAjustado, statusConferencia = 'CONFERIDO', conferidoPor = 'Crítico DIEESE', observacao } = req.body;
 
-    let updateSql = 'UPDATE precos_coletados SET ';
-    const params = [];
-    const fields = [];
-
-    if (precoAjustado !== undefined && precoAjustado !== null && !isNaN(precoAjustado)) {
-      params.push(Number(precoAjustado));
-      fields.push(`preco_final_coletado = $${params.length}`);
+    // 1. Busca preço original
+    const precoOriginalRes = await pool.query('SELECT preco_extraido FROM tb_coleta_automatizada WHERE id_coleta = $1', [id]);
+    if (precoOriginalRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Registro de coleta não encontrado.' });
     }
+    const precoOriginal = Number(precoOriginalRes.rows[0].preco_extraido);
+    const precoFinal = precoAjustado !== undefined && precoAjustado !== null && !isNaN(precoAjustado)
+      ? Number(precoAjustado)
+      : precoOriginal;
 
-    params.push(statusConferencia);
-    fields.push(`status_conferencia = $${params.length}`);
+    const decisao = precoAjustado !== undefined && Number(precoAjustado) !== precoOriginal
+      ? 'CORRIGIDO_MANUALMENTE'
+      : (statusConferencia === 'REJEITADO' ? 'REJEITADO' : 'APROVADO');
 
-    params.push(conferidoPor);
-    fields.push(`conferido_por = $${params.length}`);
+    // 2. Grava ou atualiza em tb_validacao_critica
+    const valResult = await pool.query(`
+      INSERT INTO tb_validacao_critica (
+        id_coleta, id_usuario_validador, data_hora_validacao, decisao, preco_final_validado, observacoes
+      ) VALUES ($1, 2, NOW(), $2, $3, $4)
+      RETURNING *
+    `, [id, decisao, precoFinal, observacao || null]);
 
-    fields.push('conferido_em = NOW()');
+    // 3. Atualiza status na tb_coleta_automatizada
+    const novoStatus = decisao === 'REJEITADO' ? 'REJEITADO' : 'VALIDADO';
+    await pool.query(`
+      UPDATE tb_coleta_automatizada
+      SET status_validacao = $1,
+          alerta_outlier = FALSE
+      WHERE id_coleta = $2
+    `, [novoStatus, id]);
 
-    if (observacao) {
-      params.push(observacao);
-      fields.push(`observacao_conferencia = $${params.length}`);
-    }
-
-    // Se conferido ou ajustado, desliga alerta outlier ativo
-    if (statusConferencia === 'CONFERIDO' || statusConferencia === 'AJUSTADO') {
-      fields.push('alerta_outlier = FALSE');
-    }
-
-    params.push(id);
-    updateSql += fields.join(', ') + ` WHERE id = $${params.length} RETURNING *`;
-
-    const result = await pool.query(updateSql, params);
-    res.json({ success: true, data: result.rows[0] });
+    res.json({
+      success: true,
+      message: 'Validação crítica registrada com sucesso!',
+      data: {
+        id: Number(id),
+        preco_final_coletado: precoFinal,
+        status_conferencia: decisao,
+        conferido_por: conferidoPor,
+        conferido_em: new Date(),
+        observacao_conferencia: observacao
+      }
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ==================== 7. AUTOMAÇÃO DE COLETA EM SEGUNDO PLANO ====================
+// ==================== 5. MOTOR DA AUTOMAÇÃO EM SEGUNDO PLANO ====================
 app.post('/api/coleta/iniciar', async (req, res) => {
   if (coletaAtiva.emExecucao) {
     return res.status(400).json({ success: false, message: 'Uma coleta já está em andamento.' });
   }
 
-  const { semana, limite, categoria, apenasPendentes = false, rodada = 1, minDelayMs = 2500, maxDelayMs = 4000 } = req.body;
+  const { limite, categoria, apenasPendentes = false, rodada = 1, minDelayMs = 2500, maxDelayMs = 4000 } = req.body;
 
   coletaAtiva = {
     emExecucao: true,
@@ -516,52 +631,37 @@ app.post('/api/coleta/iniciar', async (req, res) => {
 
   (async () => {
     try {
-      addLog(`🚀 Coleta iniciada (Rodada: ${rodada}, Modo: ${apenasPendentes ? 'Apenas Pendentes de Hoje' : 'Completa'}, Semana: ${semana || 'Todas'})`);
-
-      // Garantir existência de coletas_lote com id 1
-      try {
-        await pool.query(`
-          INSERT INTO coletas_lote (id, semana_coleta, status, observacoes)
-          VALUES (1, 1, 'EM_ANDAMENTO', 'Lote diário principal')
-          ON CONFLICT (id) DO UPDATE SET status = 'EM_ANDAMENTO', updated_at = NOW();
-        `);
-      } catch (loteErr) {
-        console.warn('Aviso coletas_lote init:', loteErr.message);
-      }
+      addLog(`🚀 Coleta iniciada (Rodada: ${rodada}, Modo: ${apenasPendentes ? 'Apenas Pendentes de Hoje' : 'Completa'})`);
 
       const collector = new PrecoDaHoraCollector({
         municipio: 'vitoria da conquista',
-        raioKm: 15,
         minDelayMs: Number(minDelayMs),
         maxDelayMs: Number(maxDelayMs)
       });
+      const configAtiva = await collector.carregarConfiguracao();
+      const ntfyUrl = configAtiva?.ntfy_topico_url || 'https://ntfy.sh/pdh-auto2026';
 
-      // Mercados
-      let estabSql = 'SELECT id, codigo_planilha, nome, bairro, cnpj FROM estabelecimentos WHERE ativo = TRUE';
-      const estabParams = [];
-      if (semana) {
-        estabParams.push(Number(semana));
-        estabSql += ` AND semana_coleta = $${estabParams.length}`;
-      }
-      const estabelecimentos = (await pool.query(estabSql, estabParams)).rows;
+      // 1. Mercados Ativos
+      const estabsRes = await pool.query('SELECT id_estabelecimento, codigo_externo, nome, bairro, cnpj FROM tb_estabelecimento WHERE status_ativo = TRUE');
+      const estabelecimentos = estabsRes.rows;
 
-      // Produtos: se apenasPendentes = true, busca só quem NÃO tem nota válida de hoje entre 05h e 21h
+      // 2. Produtos
       let prodSql = `
-        SELECT p.id, p.codigo_produto, p.categoria, p.item_cesta, p.marca_especificacao, p.gtin, p.tipo_busca, p.termo_busca, p.regra_calculo 
-        FROM produtos_catalogo p
-        WHERE p.ativo = TRUE
+        SELECT p.id_produto, p.codigo_dieese, p.descricao_item, p.codigo_barras, p.regra_calculo, p.categoria
+        FROM tb_produto_dieese p
+        WHERE p.status_ativo = TRUE
       `;
       const prodParams = [];
 
       if (apenasPendentes) {
         prodSql += `
-          AND p.id NOT IN (
-            SELECT DISTINCT produto_id 
-            FROM precos_coletados 
+          AND p.id_produto NOT IN (
+            SELECT DISTINCT id_produto 
+            FROM tb_coleta_automatizada 
             WHERE DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
             AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
             AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
-            AND preco_final_coletado IS NOT NULL
+            AND preco_extraido IS NOT NULL
           )
         `;
       }
@@ -570,7 +670,7 @@ app.post('/api/coleta/iniciar', async (req, res) => {
         prodParams.push(categoria);
         prodSql += ` AND p.categoria = $${prodParams.length}`;
       }
-      prodSql += ' ORDER BY p.codigo_produto ASC, p.id ASC';
+      prodSql += ' ORDER BY p.codigo_dieese ASC, p.id_produto ASC';
       if (limite) {
         prodParams.push(Number(limite));
         prodSql += ` LIMIT $${prodParams.length}`;
@@ -580,189 +680,127 @@ app.post('/api/coleta/iniciar', async (req, res) => {
       coletaAtiva.total = produtos.length;
       addLog(`📋 ${produtos.length} produtos e ${estabelecimentos.length} mercados selecionados para a rodada ${rodada}.`);
 
-      // 1. Notificação push de INÍCIO da coleta via ntfy
-      try {
-        await fetch('https://ntfy.sh/pdh-auto2026', {
-          method: 'POST',
-          headers: {
-            'Title': `DIEESE - Coleta Diária Iniciada (Rodada ${rodada})`,
-            'Priority': 'default',
-            'Tags': 'hourglass_flowing_sand,shopping_cart'
-          },
-          body: `🚀 Coleta DIEESE iniciada às ${new Date().toLocaleTimeString('pt-BR')}!\n🎯 Regra: Cupons emitidos HOJE entre 05:00 e 21:00\n📦 Produtos nesta rodada: ${produtos.length}\n🏪 Mercados ativos: ${estabelecimentos.length}\n${apenasPendentes ? '🔄 Foco: Apenas itens ainda sem venda hoje.' : '📋 Foco: Varredura geral.'}`
-        });
-        addLog('📱 Notificação de início disparada para ntfy.sh/pdh-auto2026');
-      } catch (ntfyInitErr) {
-        console.warn('Aviso ntfy início:', ntfyInitErr.message);
+      // Notificação de início
+      if (configAtiva?.notificar_ao_iniciar !== false) {
+        try {
+          await fetch(ntfyUrl, {
+            method: 'POST',
+            headers: {
+              'Title': `DIEESE - Coleta Diária Iniciada (Rodada ${rodada})`,
+              'Priority': 'default',
+              'Tags': 'hourglass_flowing_sand,shopping_cart'
+            },
+            body: `🚀 Coleta DIEESE iniciada às ${new Date().toLocaleTimeString('pt-BR')}!\n🎯 Regra: Cupons emitidos HOJE entre 05:00 e 21:00\n📦 Produtos nesta rodada: ${produtos.length}\n🏪 Mercados ativos: ${estabelecimentos.length}\n${apenasPendentes ? '🔄 Foco: Apenas itens ainda sem venda hoje.' : '📋 Foco: Varredura geral.'}`
+          });
+          addLog(`📱 Notificação de início disparada para ${ntfyUrl}`);
+        } catch (e) {}
       }
 
       const inicioTimestamp = Date.now();
       let totalEncontrados = 0;
       let totalNaoEncontrados = 0;
-      let totalDescartadosForaJanela = 0;
+      let totalAlertas = 0;
 
       for (let i = 0; i < produtos.length; i++) {
         const prod = produtos[i];
         coletaAtiva.atual = i + 1;
         coletaAtiva.progresso = Math.round(((i + 1) / produtos.length) * 100);
-        coletaAtiva.itemAtual = `${prod.marca_especificacao} (${i + 1}/${produtos.length})`;
+        coletaAtiva.itemAtual = `${prod.descricao_item} (${i + 1}/${produtos.length})`;
 
-        addLog(`🔍 [${i + 1}/${produtos.length}] Consultando: ${prod.marca_especificacao}...`);
+        addLog(`🔍 [${i + 1}/${produtos.length}] Consultando: ${prod.descricao_item}...`);
 
         let ofertas = [];
         try {
-          if (prod.tipo_busca === 'GTIN' && prod.gtin) {
-            ofertas = await collector.consultarProduto({ gtin: prod.gtin, ordenar: 'preco.asc' });
+          if (prod.codigo_barras) {
+            ofertas = await collector.buscarPorGtinComRetry(prod.codigo_barras);
           } else {
-            ofertas = await collector.consultarProduto({ termo: prod.termo_busca, ordenar: 'preco.asc' });
+            ofertas = await collector.buscarPorTermoComRetry(prod.descricao_item);
           }
         } catch (err) {
-          addLog(`⚠️ Erro ao consultar ${prod.marca_especificacao}: ${err.message}`);
+          addLog(`⚠️ Erro ao consultar ${prod.descricao_item}: ${err.message}`);
           continue;
         }
 
         const mercadosComOferta = new Set();
 
         for (const oferta of ofertas) {
-          // Validação estrita da data de emissão: DEVE ser de hoje entre 05:00 e 21:00
           const dataNfeRaw = oferta.produto?.data;
-          const ehDoDiaValido = isCupomValidoDoDia(dataNfeRaw);
+          const ehDoDiaValido = collector.validarCupomDoDia(dataNfeRaw);
 
-          if (!ehDoDiaValido) {
-            totalDescartadosForaJanela++;
-            continue;
-          }
+          if (!ehDoDiaValido) continue;
 
-          const estOferta = oferta.estabelecimento;
-          const cnpjOferta = estOferta?.cnpj ? String(estOferta.cnpj).replace(/\D/g, '') : '';
-          const nomeOferta = String(estOferta?.nomeEstabelecimento || '').toUpperCase();
-          const bairroOferta = String(estOferta?.bairro || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-
-          const matchedEstab = estabelecimentos.find(e => {
-            if (e.cnpj && cnpjOferta) {
-              return String(e.cnpj).replace(/\D/g, '') === cnpjOferta;
-            }
-            const nomeCad = e.nome.toUpperCase();
-            const bairroCad = String(e.bairro || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-            const nomeMatch = nomeOferta.includes(nomeCad) || nomeCad.includes(nomeOferta);
-            if (nomeMatch && bairroCad && bairroOferta) {
-              return bairroCad === bairroOferta;
-            }
-            return nomeMatch;
-          });
+          const matchedEstab = collector.matchEstabelecimento(oferta, estabelecimentos);
 
           if (matchedEstab) {
-            mercadosComOferta.add(matchedEstab.id);
-            await collector.salvarPreco({
-              coletaId: 1,
-              estabelecimentoId: matchedEstab.id,
-              produtoId: prod.id,
+            mercadosComOferta.add(matchedEstab.id_estabelecimento);
+            const idColetaSalva = await collector.salvarPreco({
+              estabelecimentoId: matchedEstab.id_estabelecimento,
+              produtoId: prod.id_produto,
               oferta,
-              regraCalculo: prod.regra_calculo
+              regraCalculo: prod.regra_calculo,
+              mediaAnterior: null
             });
             totalEncontrados++;
-            addLog(`   🎯 Salvo (Hoje): ${matchedEstab.codigo_planilha} (${matchedEstab.nome}) - R$ ${oferta.produto.precoBruto ?? oferta.produto.precoUnitario}`);
+            addLog(`   🎯 Salvo (Hoje): ${matchedEstab.codigo_externo} (${matchedEstab.nome}) - R$ ${oferta.produto.precoBruto ?? oferta.produto.precoUnitario}`);
           }
         }
 
-        // Para estabelecimentos sem oferta emitida hoje, registrar NAO_ENCONTRADO para re-tentativa
+        // Para estabelecimentos sem venda registrada hoje
         for (const estab of estabelecimentos) {
-          if (!mercadosComOferta.has(estab.id)) {
+          if (!mercadosComOferta.has(estab.id_estabelecimento)) {
             totalNaoEncontrados++;
             await pool.query(`
-              INSERT INTO precos_coletados (
-                coleta_id, estabelecimento_id, produto_id, status_conferencia, data_coleta
-              ) VALUES (1, $1, $2, 'NAO_ENCONTRADO', NOW())
-              ON CONFLICT (coleta_id, estabelecimento_id, produto_id) 
-              DO UPDATE SET
-                status_conferencia = CASE WHEN precos_coletados.preco_final_coletado IS NULL THEN 'NAO_ENCONTRADO' ELSE precos_coletados.status_conferencia END,
-                data_coleta = NOW();
-            `, [estab.id, prod.id]);
+              INSERT INTO tb_coleta_automatizada (
+                id_estabelecimento, id_produto, data_hora_extracao, status_validacao
+              ) VALUES ($1, $2, NOW(), 'NAO_ENCONTRADO');
+            `, [estab.id_estabelecimento, prod.id_produto]);
           }
         }
 
-        if (mercadosComOferta.size === 0) {
-          addLog(`   ✕ Nenhuma venda registrada HOJE (05h às 21h) para ${prod.marca_especificacao}. Aguardando próxima rodada.`);
-        }
+        await collector.esperarIntervaloSeguro();
       }
 
       const duracaoSegundos = Number(((Date.now() - inicioTimestamp) / 1000).toFixed(1));
-      const resumoMsg = `Rodada ${rodada} finalizada com ${totalEncontrados} preços válidos de hoje e ${totalNaoEncontrados} não encontrados (ou sem venda no dia) em ${duracaoSegundos}s.`;
-      addLog(`🏁 ${resumoMsg}`);
+      addLog(`🏁 Rodada ${rodada} concluída em ${duracaoSegundos}s! Encontrados: ${totalEncontrados}, Pendentes: ${totalNaoEncontrados}`);
 
-      // Persistir em historico_execucoes
+      // Registrar histórico de execução em tb_historico_execucoes
       try {
         await pool.query(`
-          INSERT INTO historico_execucoes (
-            semana_coleta, total_buscas, total_encontrados, total_nao_encontrados, duracao_segundos, status, mensagem_resumo, logs
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          INSERT INTO tb_historico_execucoes (
+            semana_coleta, total_buscas, total_encontrados, total_nao_encontrados,
+            total_alertas, duracao_segundos, status, mensagem_resumo, logs
+          ) VALUES (
+            1, $1, $2, $3, $4, $5, 'CONCLUIDO', $6, $7
+          )
         `, [
-          semana ? Number(semana) : null,
           produtos.length,
           totalEncontrados,
           totalNaoEncontrados,
+          totalAlertas,
           duracaoSegundos,
-          'CONCLUIDO',
-          resumoMsg,
+          `Rodada ${rodada} concluída: ${totalEncontrados} preços capturados no dia.`,
           JSON.stringify(coletaAtiva.logs.slice(0, 50))
         ]);
-      } catch (dbLogErr) {
-        console.error('Erro ao salvar historico_execucoes:', dbLogErr);
+      } catch (logErr) {
+        console.error('Aviso ao registrar tb_historico_execucoes:', logErr.message);
       }
 
-      // 2. Consulta detalhada de itens que permanecem NÃO concluídos no dia
-      let pendentesHoje = [];
-      try {
-        const pendRes = await pool.query(`
-          SELECT pc.codigo_produto, pc.item_cesta, pc.marca_especificacao
-          FROM produtos_catalogo pc
-          WHERE pc.ativo = TRUE
-          AND pc.id NOT IN (
-            SELECT DISTINCT produto_id 
-            FROM precos_coletados 
-            WHERE DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
-            AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
-            AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
-            AND preco_final_coletado IS NOT NULL
-          )
-          ORDER BY pc.codigo_produto ASC
-        `);
-        pendentesHoje = pendRes.rows;
-      } catch (pendErr) {
-        console.error('Erro ao consultar pendências do dia:', pendErr);
+      // Notificação de encerramento
+      if (configAtiva?.notificar_ao_concluir !== false) {
+        try {
+          await fetch(ntfyUrl, {
+            method: 'POST',
+            headers: {
+              'Title': `DIEESE - Relatório da Rodada ${rodada}`,
+              'Priority': 'default',
+              'Tags': 'white_check_mark,bar_chart'
+            },
+            body: `✅ Rodada ${rodada} finalizada em ${duracaoSegundos}s!\n🎯 Preços com nota de hoje: ${totalEncontrados}\n⏳ Produtos aguardando venda: ${totalNaoEncontrados}\n🔗 Painel: https://precodahora.dmi89h.easypanel.host/`
+          });
+          addLog(`📱 Notificação de encerramento disparada para ${ntfyUrl}`);
+        } catch (e) {}
       }
 
-      // 3. Notificação de CONCLUSÃO / FECHAMENTO via ntfy
-      try {
-        let relatorioCorpo = `✅ Rodada ${rodada} finalizada em ${duracaoSegundos}s!\n🎯 Preços com nota de hoje: ${totalEncontrados}\n`;
-
-        if (pendentesHoje.length > 0) {
-          relatorioCorpo += `\n⚠️ ITENS NÃO CONCLUÍDOS NO DIA (${pendentesHoje.length} sem nota fiscal entre 05h e 21h):\n`;
-          relatorioCorpo += pendentesHoje.slice(0, 15).map(p => `• [${p.codigo_produto}] ${p.item_cesta} (${p.marca_especificacao})`).join('\n');
-          if (pendentesHoje.length > 15) {
-            relatorioCorpo += `\n... e mais ${pendentesHoje.length - 15} itens pendentes.`;
-          }
-        } else {
-          relatorioCorpo += '\n🎉 TODOS OS PRODUTOS FORAM CONCLUÍDOS COM NOTAS DE HOJE!';
-        }
-
-        relatorioCorpo += '\n🔗 Painel: https://precodahora.dmi89h.easypanel.host/';
-
-        const ehFechamento = rodada === 'fechamento' || rodada === 4 || rodada === '4';
-
-        await fetch('https://ntfy.sh/pdh-auto2026', {
-          method: 'POST',
-          headers: {
-            'Title': ehFechamento ? 'DIEESE - Fechamento Diário de Preços' : `DIEESE - Relatório da Rodada ${rodada}`,
-            'Priority': ehFechamento ? 'high' : 'default',
-            'Tags': ehFechamento ? 'warning,bar_chart' : 'white_check_mark,bar_chart'
-          },
-          body: relatorioCorpo
-        });
-        addLog('📱 Relatório de conclusão e pendências enviado para ntfy.sh/pdh-auto2026');
-      } catch (ntfyErr) {
-        console.warn('Aviso ntfy final:', ntfyErr.message);
-      }
     } catch (error) {
       addLog(`❌ Falha crítica na coleta: ${error.message}`);
     } finally {
@@ -777,37 +815,37 @@ app.get('/api/coleta/progresso', (req, res) => {
   res.json({ success: true, data: coletaAtiva });
 });
 
-// Relatório consolidado de cobertura do dia (05h às 21h)
+// Relatório consolidado de cobertura do dia
 app.get('/api/relatorio-diario', async (req, res) => {
   try {
-    const totalProdRes = await pool.query('SELECT COUNT(*) FROM produtos_catalogo WHERE ativo = TRUE');
+    const totalProdRes = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese WHERE status_ativo = TRUE');
     const totalProdutos = Number(totalProdRes.rows[0].count);
 
     const pendRes = await pool.query(`
-      SELECT pc.id, pc.codigo_produto, pc.categoria, pc.item_cesta, pc.marca_especificacao
-      FROM produtos_catalogo pc
-      WHERE pc.ativo = TRUE
-      AND pc.id NOT IN (
-        SELECT DISTINCT produto_id 
-        FROM precos_coletados 
+      SELECT p.id_produto AS id, p.codigo_dieese AS codigo_produto, p.categoria, p.descricao_item AS item_cesta, p.descricao_item AS marca_especificacao
+      FROM tb_produto_dieese p
+      WHERE p.status_ativo = TRUE
+      AND p.id_produto NOT IN (
+        SELECT DISTINCT id_produto 
+        FROM tb_coleta_automatizada 
         WHERE DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
         AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
         AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
-        AND preco_final_coletado IS NOT NULL
+        AND preco_extraido IS NOT NULL
       )
-      ORDER BY pc.codigo_produto ASC
+      ORDER BY p.codigo_dieese ASC
     `);
 
     const concluidosRes = await pool.query(`
-      SELECT DISTINCT pc.id, pc.codigo_produto, pc.item_cesta, pc.marca_especificacao
-      FROM produtos_catalogo pc
-      JOIN precos_coletados pr ON pr.produto_id = pc.id
-      WHERE pc.ativo = TRUE
-      AND DATE(pr.data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
-      AND EXTRACT(HOUR FROM pr.data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
-      AND EXTRACT(HOUR FROM pr.data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
-      AND pr.preco_final_coletado IS NOT NULL
-      ORDER BY pc.codigo_produto ASC
+      SELECT DISTINCT p.id_produto AS id, p.codigo_dieese AS codigo_produto, p.descricao_item AS item_cesta, p.descricao_item AS marca_especificacao
+      FROM tb_produto_dieese p
+      JOIN tb_coleta_automatizada ca ON ca.id_produto = p.id_produto
+      WHERE p.status_ativo = TRUE
+      AND DATE(ca.data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
+      AND EXTRACT(HOUR FROM ca.data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
+      AND EXTRACT(HOUR FROM ca.data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
+      AND ca.preco_extraido IS NOT NULL
+      ORDER BY p.codigo_dieese ASC
     `);
 
     res.json({
@@ -826,10 +864,27 @@ app.get('/api/relatorio-diario', async (req, res) => {
   }
 });
 
-// ==================== 8. HISTÓRICO & LOGS DE EXECUÇÕES ====================
+// Histórico de Execuções (tb_historico_execucoes)
 app.get('/api/execucoes', async (req, res) => {
   try {
-    const runs = await pool.query('SELECT * FROM historico_execucoes ORDER BY id DESC LIMIT 30');
+    const runs = await pool.query(`
+      SELECT 
+        id_execucao AS id,
+        semana_coleta,
+        mercado_codigo,
+        total_buscas,
+        total_encontrados,
+        total_nao_encontrados,
+        total_alertas,
+        duracao_segundos,
+        status,
+        mensagem_resumo,
+        logs,
+        created_at
+      FROM tb_historico_execucoes 
+      ORDER BY id_execucao DESC 
+      LIMIT 30
+    `);
     const hoje = await pool.query(`
       SELECT 
         COUNT(*) as total_lotes_hoje,
@@ -837,7 +892,7 @@ app.get('/api/execucoes', async (req, res) => {
         COALESCE(SUM(total_encontrados), 0) as total_encontrados_hoje,
         COALESCE(SUM(total_nao_encontrados), 0) as total_nao_encontrados_hoje,
         COALESCE(SUM(total_alertas), 0) as total_alertas_hoje
-      FROM historico_execucoes
+      FROM tb_historico_execucoes
       WHERE DATE(created_at) = CURRENT_DATE
     `);
     res.json({
@@ -856,7 +911,10 @@ app.get('/api/execucoes', async (req, res) => {
 app.post('/api/notificar-ntfy', async (req, res) => {
   try {
     const { titulo, mensagem, tags = 'white_check_mark,robot' } = req.body;
-    const response = await fetch('https://ntfy.sh/pdh-auto2026', {
+    const configRes = await pool.query('SELECT ntfy_topico_url FROM tb_configuracao_automacao WHERE ativo = TRUE LIMIT 1');
+    const ntfyUrl = configRes.rows[0]?.ntfy_topico_url || 'https://ntfy.sh/pdh-auto2026';
+
+    const response = await fetch(ntfyUrl, {
       method: 'POST',
       headers: {
         'Title': titulo || 'Preço da Hora DIEESE',
@@ -872,7 +930,7 @@ app.post('/api/notificar-ntfy', async (req, res) => {
   }
 });
 
-// ==================== 6. ENDPOINTS SCHEMA V2 (NOVA ARQUITETURA) ====================
+// ==================== 6. ENDPOINTS SCHEMA V2 (OFICIAIS) ====================
 
 // Listar produtos do catálogo oficial (tb_produto_dieese)
 app.get('/api/v2/produtos', async (req, res) => {
@@ -902,7 +960,7 @@ app.get('/api/v2/estabelecimentos', async (req, res) => {
   }
 });
 
-// Listar coletas pendentes de validação para o humano
+// Listar coletas pendentes de validação para o humano (tb_coleta_automatizada)
 app.get('/api/v2/coletas-pendentes', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -949,7 +1007,6 @@ app.post('/api/v2/validar', async (req, res) => {
       });
     }
 
-    // Grava validação humana
     const resultVal = await pool.query(`
       INSERT INTO tb_validacao_critica (
         id_coleta, id_usuario_validador, data_hora_validacao, decisao, preco_final_validado, motivo_rejeicao, observacoes
@@ -957,11 +1014,11 @@ app.post('/api/v2/validar', async (req, res) => {
       RETURNING *
     `, [id_coleta, id_usuario_validador, decisao, preco_final_validado, motivo_rejeicao || null, observacoes || null]);
 
-    // Atualiza status na tb_coleta_automatizada
     const novoStatus = decisao === 'REJEITADO' ? 'REJEITADO' : 'VALIDADO';
     await pool.query(`
       UPDATE tb_coleta_automatizada
-      SET status_validacao = $1
+      SET status_validacao = $1,
+          alerta_outlier = FALSE
       WHERE id_coleta = $2
     `, [novoStatus, id_coleta]);
 
@@ -975,7 +1032,7 @@ app.post('/api/v2/validar', async (req, res) => {
   }
 });
 
-// Relatório Oficial DIEESE: Preços Aprovados e Validados
+// Relatório Oficial DIEESE: Preços Aprovados e Validados (vw_precos_oficiais_dieese)
 app.get('/api/v2/precos-oficiais', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -988,7 +1045,7 @@ app.get('/api/v2/precos-oficiais', async (req, res) => {
   }
 });
 
-// Endpoint para Robô / n8n / Script Python inserir preço bruto em tb_coleta_automatizada
+// Ingestão pelo robô / n8n / script Python (tb_coleta_automatizada)
 app.post('/api/v2/coleta-robo', async (req, res) => {
   try {
     const { codigo_barras, cnpj, preco_extraido, data_emissao_nfe, link_comprovante_nfe, alerta_outlier, motivo_alerta } = req.body;
@@ -1092,253 +1149,53 @@ app.put('/api/v2/configuracao', async (req, res) => {
   }
 });
 
-// Auto-inicialização de schema e catálogo de produtos/mercados
+// ==================== 7. AUTO-INICIALIZAÇÃO & MIGRAÇÃO ====================
 async function autoInitDatabase() {
   try {
-    console.log('⚙️ Verificando e atualizando schema no banco de dados...');
-    
-    // Migração de resiliência: permitir NULL e criar índice único
-    try {
-      await pool.query('ALTER TABLE precos_coletados ALTER COLUMN preco_final_coletado DROP NOT NULL;');
-      await pool.query(`
-        DELETE FROM precos_coletados a
-        USING precos_coletados b
-        WHERE a.id < b.id
-          AND a.coleta_id = b.coleta_id
-          AND a.estabelecimento_id = b.estabelecimento_id
-          AND a.produto_id = b.produto_id;
-      `);
-      await pool.query(`
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_precos_coleta_estab_prod 
-        ON precos_coletados (coleta_id, estabelecimento_id, produto_id);
-      `);
-      await pool.query(`
-        ALTER TABLE precos_coletados DROP CONSTRAINT IF EXISTS precos_coletados_coleta_id_fkey;
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS coletas_lote (
-          id SERIAL PRIMARY KEY,
-          semana_coleta INT NOT NULL,
-          data_inicio TIMESTAMPTZ DEFAULT NOW(),
-          data_fim TIMESTAMPTZ,
-          status VARCHAR(20) DEFAULT 'EM_ANDAMENTO',
-          total_itens_esperados INT DEFAULT 0,
-          total_itens_coletados INT DEFAULT 0,
-          observacoes TEXT,
-          created_at TIMESTAMPTZ DEFAULT NOW(),
-          updated_at TIMESTAMPTZ DEFAULT NOW()
-        );
-      `);
-      await pool.query(`
-        INSERT INTO coletas_lote (id, semana_coleta, status, observacoes)
-        VALUES (1, 1, 'CONCLUIDO', 'Lote Inicial Padrão')
-        ON CONFLICT (id) DO NOTHING;
-      `);
-      await pool.query(`
-        ALTER TABLE estabelecimentos ADD COLUMN IF NOT EXISTS endereco TEXT;
-      `);
-      await pool.query(`
-        ALTER TABLE estabelecimentos ADD COLUMN IF NOT EXISTS endereco_completo TEXT;
-      `);
-      console.log('✅ Índice único uq_precos_coleta_estab_prod e tabelas sincronizados.');
-    } catch (migErr) {
-      console.warn('Aviso migração uq_precos_coleta_estab_prod:', migErr.message);
+    console.log('⚙️ Inicializando tabelas V2 e aplicando dicionário de dados...');
+
+    const v2SchemaPath = path.resolve('database/schema_v2.sql');
+    if (fs.existsSync(v2SchemaPath)) {
+      const v2SchemaSql = fs.readFileSync(v2SchemaPath, 'utf8');
+      await pool.query(v2SchemaSql);
+      console.log('✅ Schema V2 (tb_* e dicionário) conferido com sucesso.');
     }
 
-    const schemaSql = fs.readFileSync(path.resolve('schema.sql'), 'utf8');
-    await pool.query(schemaSql);
-    console.log('✅ Schema e colunas conferidos com sucesso.');
-
-    const check = await pool.query("SELECT COUNT(*) FROM estabelecimentos");
-    if (Number(check.rows[0].count) === 0) {
-      if (fs.existsSync(path.resolve('seed-data.sql'))) {
-        console.log('🌱 Inserindo catálogo de produtos e estabelecimentos...');
-        const seedSql = fs.readFileSync(path.resolve('seed-data.sql'), 'utf8');
-        await pool.query(seedSql);
-        console.log('✅ Dados iniciais populados com sucesso!');
-      }
-    }
-
-    // Auto-execução da arquitetura V2 (tb_estabelecimento, tb_produto_dieese, etc)
-    try {
-      const v2SchemaPath = path.resolve('database/schema_v2.sql');
-      if (fs.existsSync(v2SchemaPath)) {
-        const v2SchemaSql = fs.readFileSync(v2SchemaPath, 'utf8');
-        await pool.query(v2SchemaSql);
-        console.log('✅ Schema V2 (5 Tabelas e Views DIEESE) conferido com sucesso.');
-      }
-
-      const v2MigratePath = path.resolve('database/migrate_to_v2.sql');
-      if (fs.existsSync(v2MigratePath)) {
-        const v2MigrateSql = fs.readFileSync(v2MigratePath, 'utf8');
-        await pool.query(v2MigrateSql);
-        console.log('✅ Migração de dados para Schema V2 realizada com sucesso.');
-      }
-    } catch (v2Err) {
-      console.warn('⚠️ Aviso ao sincronizar Schema V2:', v2Err.message);
+    const cleanupPath = path.resolve('database/cleanup_legacy_tables.sql');
+    if (fs.existsSync(cleanupPath)) {
+      const cleanupSql = fs.readFileSync(cleanupPath, 'utf8');
+      await pool.query(cleanupSql);
+      console.log('🧹 Limpeza definitiva de tabelas legadas executada com sucesso.');
     }
   } catch (err) {
     console.error('⚠️ Aviso durante auto-inicialização do banco:', err.message);
   }
 }
 
-// Endpoint de diagnóstico passo a passo da migração
-app.get('/api/debug-migration', async (req, res) => {
-  const results = {};
-  
-  // 0. Drop unique constraints se existirem
+// Endpoint manual de setup / limpeza
+app.post('/api/setup-db', async (req, res) => {
   try {
-    await pool.query('ALTER TABLE tb_produto_dieese DROP CONSTRAINT IF EXISTS tb_produto_dieese_codigo_dieese_key;');
-    await pool.query('ALTER TABLE tb_estabelecimento DROP CONSTRAINT IF EXISTS tb_estabelecimento_codigo_externo_key;');
-    results.drop_constraints = 'OK';
-  } catch (e) {
-    results.drop_constraints = e.message;
-  }
+    await autoInitDatabase();
+    const cEstab = await pool.query('SELECT COUNT(*) FROM tb_estabelecimento');
+    const cProd = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese');
+    const cColeta = await pool.query('SELECT COUNT(*) FROM tb_coleta_automatizada');
+    const cVal = await pool.query('SELECT COUNT(*) FROM tb_validacao_critica');
+    const cConf = await pool.query('SELECT COUNT(*) FROM tb_configuracao_automacao');
 
-  // 1. Teste Estabelecimentos
-  try {
-    const q1 = await pool.query(`
-      INSERT INTO tb_estabelecimento (
-        id_estabelecimento, codigo_externo, nome, cnpj, bairro, municipio, uf, endereco, lat_long, status_ativo, created_at
-      )
-      SELECT 
-        e.id,
-        e.codigo_planilha,
-        e.nome,
-        e.cnpj,
-        e.bairro,
-        COALESCE(e.municipio, 'Vitória da Conquista'),
-        COALESCE(e.uf, 'BA'),
-        COALESCE(e.endereco_completo, e.endereco, ''),
-        CASE 
-          WHEN e.latitude IS NOT NULL AND e.longitude IS NOT NULL THEN CONCAT(e.latitude, ',', e.longitude)
-          ELSE NULL 
-        END,
-        COALESCE(e.ativo, TRUE),
-        COALESCE(e.created_at, NOW())
-      FROM estabelecimentos e
-      ON CONFLICT (id_estabelecimento) DO UPDATE SET
-        codigo_externo = EXCLUDED.codigo_externo,
-        nome = EXCLUDED.nome,
-        cnpj = COALESCE(EXCLUDED.cnpj, tb_estabelecimento.cnpj),
-        bairro = EXCLUDED.bairro,
-        endereco = COALESCE(EXCLUDED.endereco, tb_estabelecimento.endereco),
-        lat_long = COALESCE(EXCLUDED.lat_long, tb_estabelecimento.lat_long),
-        status_ativo = EXCLUDED.status_ativo
-      RETURNING id_estabelecimento;
-    `);
-    results.estabelecimentos = `Migrados ${q1.rows.length} mercados`;
-  } catch (e) {
-    results.estabelecimentos_error = e.message;
+    res.json({
+      success: true,
+      message: 'Banco 100% atualizado para Schema V2 e tabelas legadas removidas com sucesso.',
+      counts: {
+        tb_estabelecimento: cEstab.rows[0].count,
+        tb_produto_dieese: cProd.rows[0].count,
+        tb_coleta_automatizada: cColeta.rows[0].count,
+        tb_validacao_critica: cVal.rows[0].count,
+        tb_configuracao_automacao: cConf.rows[0].count
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
-
-  // 2. Teste Produtos
-  try {
-    const q2 = await pool.query(`
-      INSERT INTO tb_produto_dieese (
-        id_produto, codigo_dieese, descricao_item, codigo_barras, volume_peso, unidade_medida, categoria, regra_calculo, status_ativo, created_at
-      )
-      SELECT 
-        p.id,
-        p.codigo_produto,
-        COALESCE(p.marca_especificacao, p.item_cesta, p.codigo_produto),
-        p.gtin,
-        NULL,
-        COALESCE(p.unidade_medida, 'UN'),
-        p.categoria,
-        COALESCE(p.regra_calculo, 'PADRAO'),
-        COALESCE(p.ativo, TRUE),
-        COALESCE(p.created_at, NOW())
-      FROM produtos_catalogo p
-      ON CONFLICT (id_produto) DO UPDATE SET
-        codigo_dieese = EXCLUDED.codigo_dieese,
-        descricao_item = EXCLUDED.descricao_item,
-        codigo_barras = COALESCE(EXCLUDED.codigo_barras, tb_produto_dieese.codigo_barras),
-        unidade_medida = EXCLUDED.unidade_medida,
-        categoria = EXCLUDED.categoria,
-        regra_calculo = EXCLUDED.regra_calculo,
-        status_ativo = EXCLUDED.status_ativo
-      RETURNING id_produto;
-    `);
-    results.produtos = `Migrados ${q2.rows.length} produtos`;
-  } catch (e) {
-    results.produtos_error = e.message;
-  }
-
-  // 3. Teste Usuários
-  try {
-    const q3 = await pool.query(`
-      INSERT INTO tb_usuario (id_usuario, nome, email, papel, status_ativo)
-      VALUES 
-        (1, 'Sistema_Automacao', 'bot@precodahora.ba.gov.br', 'BOT', TRUE),
-        (2, 'Mateus_Validador', 'mateus@dieese.org.br', 'VALIDADOR', TRUE),
-        (3, 'Mecia_Validador', 'mecia@dieese.org.br', 'VALIDADOR', TRUE),
-        (4, 'Admin_DIEESE', 'admin@dieese.org.br', 'ADMIN', TRUE)
-      ON CONFLICT (id_usuario) DO UPDATE SET
-        nome = EXCLUDED.nome,
-        papel = EXCLUDED.papel,
-        status_ativo = EXCLUDED.status_ativo
-      RETURNING id_usuario;
-    `);
-    results.usuarios = `Migrados ${q3.rows.length} usuarios`;
-  } catch (e) {
-    results.usuarios_error = e.message;
-  }
-
-  // 4. Teste Coletas
-  try {
-    const q4 = await pool.query(`
-      INSERT INTO tb_coleta_automatizada (
-        id_coleta, id_estabelecimento, id_produto, data_hora_extracao, preco_extraido, data_emissao_nfe, 
-        link_comprovante_nfe, status_validacao, alerta_outlier, motivo_alerta, raw_payload, created_at
-      )
-      SELECT 
-        pc.id,
-        pc.estabelecimento_id,
-        pc.produto_id,
-        COALESCE(pc.data_coleta, NOW()),
-        pc.preco_final_coletado,
-        pc.data_emissao_nfe,
-        NULL,
-        CASE 
-          WHEN pc.status_conferencia = 'CONFERIDO' THEN 'VALIDADO'
-          WHEN pc.status_conferencia = 'NAO_ENCONTRADO' THEN 'NAO_ENCONTRADO'
-          WHEN pc.status_conferencia = 'DESCARTADO' THEN 'REJEITADO'
-          ELSE 'PENDENTE'
-        END,
-        COALESCE(pc.alerta_outlier, FALSE),
-        pc.motivo_alerta,
-        pc.raw_payload,
-        COALESCE(pc.data_coleta, NOW())
-      FROM precos_coletados pc
-      WHERE pc.preco_final_coletado IS NOT NULL
-      ON CONFLICT (id_coleta) DO NOTHING
-      RETURNING id_coleta;
-    `);
-    results.coletas = `Migradas ${q4.rows.length} coletas`;
-  } catch (e) {
-    results.coletas_error = e.message;
-  }
-
-  // Contagens finais
-  try {
-    const c1 = await pool.query('SELECT COUNT(*) FROM tb_estabelecimento');
-    const c2 = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese');
-    const c3 = await pool.query('SELECT COUNT(*) FROM tb_usuario');
-    const c4 = await pool.query('SELECT COUNT(*) FROM tb_coleta_automatizada');
-    const c5 = await pool.query('SELECT COUNT(*) FROM tb_validacao_critica');
-    results.contagens = {
-      tb_estabelecimento: c1.rows[0].count,
-      tb_produto_dieese: c2.rows[0].count,
-      tb_usuario: c3.rows[0].count,
-      tb_coleta_automatizada: c4.rows[0].count,
-      tb_validacao_critica: c5.rows[0].count
-    };
-  } catch (e) {
-    results.contagens_error = e.message;
-  }
-
-  res.json({ success: true, results });
 });
 
 app.listen(PORT, async () => {

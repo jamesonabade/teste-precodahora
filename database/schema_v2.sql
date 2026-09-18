@@ -145,6 +145,37 @@ INSERT INTO tb_configuracao_automacao (
     50.00, 'https://ntfy.sh/pdh-auto2026', 'Configuração oficial DIEESE Cesta Básica com validação estrita de mesmo dia'
 ) ON CONFLICT (nome_perfil) DO NOTHING;
 
+-- Tabela 7: Histórico e Logs de Execuções dos Lotes de Automação
+CREATE TABLE IF NOT EXISTS tb_historico_execucoes (
+    id_execucao SERIAL PRIMARY KEY,
+    semana_coleta INTEGER,
+    mercado_codigo VARCHAR(20),
+    total_buscas INTEGER DEFAULT 0,
+    total_encontrados INTEGER DEFAULT 0,
+    total_nao_encontrados INTEGER DEFAULT 0,
+    total_alertas INTEGER DEFAULT 0,
+    duracao_segundos NUMERIC(10, 2) DEFAULT 0,
+    status VARCHAR(50) DEFAULT 'CONCLUIDO',
+    mensagem_resumo TEXT,
+    logs JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tb_execucoes_created_at ON tb_historico_execucoes(created_at DESC);
+
+COMMENT ON TABLE tb_historico_execucoes IS 'Logs de telemetria e histórico de cada lote/rodada executada pelo motor de automação.';
+COMMENT ON COLUMN tb_historico_execucoes.id_execucao IS 'Chave primária do registro de execução.';
+COMMENT ON COLUMN tb_historico_execucoes.semana_coleta IS 'Semana de referência DIEESE (1 a 4).';
+COMMENT ON COLUMN tb_historico_execucoes.total_buscas IS 'Total de requisições de produtos efetuadas nesta rodada.';
+COMMENT ON COLUMN tb_historico_execucoes.total_encontrados IS 'Total de produtos com ofertas válidas encontradas no dia.';
+COMMENT ON COLUMN tb_historico_execucoes.total_nao_encontrados IS 'Total de produtos que não tiveram cupom registrado no dia.';
+COMMENT ON COLUMN tb_historico_execucoes.total_alertas IS 'Total de alertas de outlier (>50% de variação) disparados.';
+COMMENT ON COLUMN tb_historico_execucoes.duracao_segundos IS 'Tempo total de processamento da rodada em segundos.';
+COMMENT ON COLUMN tb_historico_execucoes.status IS 'Status da execução (EM_ANDAMENTO, CONCLUIDO, FALHA).';
+COMMENT ON COLUMN tb_historico_execucoes.mensagem_resumo IS 'Resumo legível para notificação e auditoria.';
+COMMENT ON COLUMN tb_historico_execucoes.logs IS 'Array JSON contendo as últimas 50 mensagens de log do robô.';
+COMMENT ON COLUMN tb_historico_execucoes.created_at IS 'Data e hora em que a execução ocorreu.';
+
 -- ------------------------------------------------------------------------------
 -- ÍNDICES DE PERFORMANCE
 -- ------------------------------------------------------------------------------
