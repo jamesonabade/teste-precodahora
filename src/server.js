@@ -877,11 +877,28 @@ async function autoInitDatabase() {
         ON precos_coletados (coleta_id, estabelecimento_id, produto_id);
       `);
       await pool.query(`
+        ALTER TABLE precos_coletados DROP CONSTRAINT IF EXISTS precos_coletados_coleta_id_fkey;
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS coletas_lote (
+          id SERIAL PRIMARY KEY,
+          semana_coleta INT NOT NULL,
+          data_inicio TIMESTAMPTZ DEFAULT NOW(),
+          data_fim TIMESTAMPTZ,
+          status VARCHAR(20) DEFAULT 'EM_ANDAMENTO',
+          total_itens_esperados INT DEFAULT 0,
+          total_itens_coletados INT DEFAULT 0,
+          observacoes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+      await pool.query(`
         INSERT INTO coletas_lote (id, semana_coleta, status, observacoes)
         VALUES (1, 1, 'CONCLUIDO', 'Lote Inicial Padrão')
         ON CONFLICT (id) DO NOTHING;
       `);
-      console.log('✅ Índice único uq_precos_coleta_estab_prod e coletas_lote ativos.');
+      console.log('✅ Índice único uq_precos_coleta_estab_prod e tabelas sincronizados.');
     } catch (migErr) {
       console.warn('Aviso migração uq_precos_coleta_estab_prod:', migErr.message);
     }

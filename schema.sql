@@ -83,6 +83,7 @@ ALTER TABLE precos_coletados ADD COLUMN IF NOT EXISTS status_conferencia VARCHAR
 ALTER TABLE precos_coletados ADD COLUMN IF NOT EXISTS conferido_em TIMESTAMPTZ;
 ALTER TABLE precos_coletados ADD COLUMN IF NOT EXISTS conferido_por VARCHAR(100);
 ALTER TABLE precos_coletados ADD COLUMN IF NOT EXISTS observacao_conferencia TEXT;
+ALTER TABLE precos_coletados DROP CONSTRAINT IF EXISTS precos_coletados_coleta_id_fkey;
 ALTER TABLE precos_coletados ALTER COLUMN preco_final_coletado DROP NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_precos_coleta_estab_prod ON precos_coletados (coleta_id, estabelecimento_id, produto_id);
