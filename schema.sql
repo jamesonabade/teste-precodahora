@@ -69,8 +69,17 @@ CREATE TABLE IF NOT EXISTS precos_coletados (
     alerta_outlier BOOLEAN DEFAULT FALSE,
     motivo_alerta TEXT,
     raw_payload JSONB,
+    status_conferencia VARCHAR(30) DEFAULT 'PENDENTE',
+    conferido_em TIMESTAMPTZ,
+    conferido_por VARCHAR(100),
+    observacao_conferencia TEXT,
     data_coleta TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE precos_coletados ADD COLUMN IF NOT EXISTS status_conferencia VARCHAR(30) DEFAULT 'PENDENTE';
+ALTER TABLE precos_coletados ADD COLUMN IF NOT EXISTS conferido_em TIMESTAMPTZ;
+ALTER TABLE precos_coletados ADD COLUMN IF NOT EXISTS conferido_por VARCHAR(100);
+ALTER TABLE precos_coletados ADD COLUMN IF NOT EXISTS observacao_conferencia TEXT;
 
 CREATE TABLE IF NOT EXISTS historico_medias (
     id SERIAL PRIMARY KEY,

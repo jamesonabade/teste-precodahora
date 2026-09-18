@@ -715,13 +715,13 @@ app.post('/api/notificar-ntfy', async (req, res) => {
 // Auto-inicialização de schema e catálogo de produtos/mercados
 async function autoInitDatabase() {
   try {
-    const check = await pool.query("SELECT to_regclass('public.estabelecimentos') as tbl");
-    if (!check.rows[0].tbl) {
-      console.log('⚙️ Inicializando schema e tabelas no banco de dados...');
-      const schemaSql = fs.readFileSync(path.resolve('schema.sql'), 'utf8');
-      await pool.query(schemaSql);
-      console.log('✅ Schema criado com sucesso.');
+    console.log('⚙️ Verificando e atualizando schema no banco de dados...');
+    const schemaSql = fs.readFileSync(path.resolve('schema.sql'), 'utf8');
+    await pool.query(schemaSql);
+    console.log('✅ Schema e colunas conferidos com sucesso.');
 
+    const check = await pool.query("SELECT COUNT(*) FROM estabelecimentos");
+    if (Number(check.rows[0].count) === 0) {
       if (fs.existsSync(path.resolve('seed-data.sql'))) {
         console.log('🌱 Inserindo catálogo de produtos e estabelecimentos...');
         const seedSql = fs.readFileSync(path.resolve('seed-data.sql'), 'utf8');
