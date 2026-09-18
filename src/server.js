@@ -14,29 +14,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-
-// Rota raiz: Backend Headless API (Sem frontend)
-app.get('/', (req, res) => {
-  res.json({
-    service: 'Preço da Hora BA - Backend API de Coleta DIEESE',
-    status: 'online',
-    version: '1.0.0',
-    mode: 'headless_backend',
-    description: 'Serviço backend para consulta automatizada de NFC-e na SEFAZ e persistência em banco de dados PostgreSQL.',
-    endpoints: {
-      status: 'GET /api/status',
-      iniciarColeta: 'POST /api/coleta/iniciar',
-      progressoColeta: 'GET /api/coleta/progresso',
-      cancelarColeta: 'POST /api/coleta/cancelar',
-      historicoColetas: 'GET /api/coleta/historico',
-      produtos: 'GET /api/produtos',
-      estabelecimentos: 'GET /api/estabelecimentos',
-      precos: 'GET /api/precos',
-      matriz: 'GET /api/matriz',
-      webhook: 'POST /api/webhook/coleta'
-    }
-  });
-});
+app.use(express.static(path.resolve('public')));
 
 // Estado global de coleta em background
 let coletaAtiva = {
@@ -894,6 +872,122 @@ app.post('/api/notificar-ntfy', async (req, res) => {
   }
 });
 
+// ==================== 6. ENDPOINTS SCHEMA V2 (NOVA ARQUITETURA) ====================
+
+// Listar produtos do catálogo oficial (tb_produto_dieese)
+app.get('/api/v2/produtos', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM tb_produto_dieese 
+      WHERE status_ativo = TRUE 
+      ORDER BY codigo_dieese ASC, id_produto ASC
+    `);
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Listar estabelecimentos / mercados (tb_estabelecimento)
+app.get('/api/v2/estabelecimentos', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM tb_estabelecimento 
+      WHERE status_ativo = TRUE 
+      ORDER BY codigo_externo ASC, id_estabelecimento ASC
+    `);
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Listar coletas pendentes de validação para o humano
+app.get('/api/v2/coletas-pendentes', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        ca.id_coleta,
+        ca.id_estabelecimento,
+        ca.id_produto,
+        ca.data_hora_extracao,
+        ca.preco_extraido,
+        ca.data_emissao_nfe,
+        ca.link_comprovante_nfe,
+        ca.status_validacao,
+        ca.alerta_outlier,
+        ca.motivo_alerta,
+        p.codigo_dieese,
+        p.descricao_item,
+        p.categoria,
+        p.unidade_medida,
+        e.codigo_externo AS mercado_codigo,
+        e.nome AS mercado_nome,
+        e.cnpj AS mercado_cnpj,
+        e.bairro AS mercado_bairro
+      FROM tb_coleta_automatizada ca
+      JOIN tb_produto_dieese p ON p.id_produto = ca.id_produto
+      JOIN tb_estabelecimento e ON e.id_estabelecimento = ca.id_estabelecimento
+      WHERE ca.status_validacao = 'PENDENTE'
+      ORDER BY ca.alerta_outlier DESC, ca.data_hora_extracao DESC
+    `);
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Registrar validação / crítica humana (tb_validacao_critica)
+app.post('/api/v2/validar', async (req, res) => {
+  try {
+    const { id_coleta, id_usuario_validador = 2, decisao, preco_final_validado, motivo_rejeicao, observacoes } = req.body;
+
+    if (!id_coleta || !decisao || preco_final_validado === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'id_coleta, decisao (APROVADO, REJEITADO, CORRIGIDO_MANUALMENTE) e preco_final_validado são obrigatórios.' 
+      });
+    }
+
+    // Grava validação humana
+    const resultVal = await pool.query(`
+      INSERT INTO tb_validacao_critica (
+        id_coleta, id_usuario_validador, data_hora_validacao, decisao, preco_final_validado, motivo_rejeicao, observacoes
+      ) VALUES ($1, $2, NOW(), $3, $4, $5, $6)
+      RETURNING *
+    `, [id_coleta, id_usuario_validador, decisao, preco_final_validado, motivo_rejeicao || null, observacoes || null]);
+
+    // Atualiza status na tb_coleta_automatizada
+    const novoStatus = decisao === 'REJEITADO' ? 'REJEITADO' : 'VALIDADO';
+    await pool.query(`
+      UPDATE tb_coleta_automatizada
+      SET status_validacao = $1
+      WHERE id_coleta = $2
+    `, [novoStatus, id_coleta]);
+
+    res.json({
+      success: true,
+      message: 'Validação registrada com sucesso',
+      data: resultVal.rows[0]
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Relatório Oficial DIEESE: Preços Aprovados e Validados
+app.get('/api/v2/precos-oficiais', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM vw_precos_oficiais_dieese
+      ORDER BY codigo_dieese ASC, codigo_mercado ASC
+    `);
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Auto-inicialização de schema e catálogo de produtos/mercados
 async function autoInitDatabase() {
   try {
@@ -960,25 +1054,35 @@ async function autoInitDatabase() {
         console.log('✅ Dados iniciais populados com sucesso!');
       }
     }
+
+    // Auto-execução da arquitetura V2 (tb_estabelecimento, tb_produto_dieese, etc)
+    try {
+      const v2SchemaPath = path.resolve('database/schema_v2.sql');
+      if (fs.existsSync(v2SchemaPath)) {
+        const v2SchemaSql = fs.readFileSync(v2SchemaPath, 'utf8');
+        await pool.query(v2SchemaSql);
+        console.log('✅ Schema V2 (5 Tabelas e Views DIEESE) conferido com sucesso.');
+      }
+
+      const v2MigratePath = path.resolve('database/migrate_to_v2.sql');
+      if (fs.existsSync(v2MigratePath)) {
+        const v2MigrateSql = fs.readFileSync(v2MigratePath, 'utf8');
+        await pool.query(v2MigrateSql);
+        console.log('✅ Migração de dados para Schema V2 realizada com sucesso.');
+      }
+    } catch (v2Err) {
+      console.warn('⚠️ Aviso ao sincronizar Schema V2:', v2Err.message);
+    }
   } catch (err) {
     console.error('⚠️ Aviso durante auto-inicialização do banco:', err.message);
   }
 }
 
-// Endpoint para inicialização manual forçada do banco
+// Endpoint para inicialização manual forçada do banco (incluindo V2)
 app.post('/api/setup-db', async (req, res) => {
   try {
-    const schemaSql = fs.readFileSync(path.resolve('schema.sql'), 'utf8');
-    await pool.query(schemaSql);
-
-    let seedApplied = false;
-    if (fs.existsSync(path.resolve('seed-data.sql'))) {
-      const seedSql = fs.readFileSync(path.resolve('seed-data.sql'), 'utf8');
-      await pool.query(seedSql);
-      seedApplied = true;
-    }
-
-    res.json({ success: true, message: 'Banco inicializado com sucesso', seedApplied });
+    await autoInitDatabase();
+    res.json({ success: true, message: 'Banco inicializado e migrado para V2 com sucesso' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

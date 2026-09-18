@@ -273,6 +273,53 @@ export class PrecoDaHoraCollector {
             updated_at = NOW()
         WHERE id = $4
       `, [cnpjLimpo, est.latitude, est.longitude, estabelecimentoId]);
+
+      // Atualiza também tb_estabelecimento
+      try {
+        await pool.query(`
+          UPDATE tb_estabelecimento
+          SET cnpj = COALESCE(cnpj, $1),
+              lat_long = COALESCE(lat_long, $2),
+              updated_at = NOW()
+          WHERE codigo_externo = (SELECT codigo_planilha FROM estabelecimentos WHERE id = $3)
+        `, [cnpjLimpo, `${est.latitude},${est.longitude}`, estabelecimentoId]);
+      } catch (e) {}
+    }
+
+    // Sincronização com a nova tabela tb_coleta_automatizada (V2)
+    try {
+      await pool.query(`
+        INSERT INTO tb_coleta_automatizada (
+          id_estabelecimento, id_produto, data_hora_extracao, preco_extraido, data_emissao_nfe,
+          link_comprovante_nfe, status_validacao, alerta_outlier, motivo_alerta, raw_payload
+        )
+        SELECT 
+          te.id_estabelecimento,
+          tp.id_produto,
+          NOW(),
+          $1,
+          $2,
+          NULL,
+          'PENDENTE',
+          $3,
+          $4,
+          $5
+        FROM estabelecimentos e
+        JOIN tb_estabelecimento te ON te.codigo_externo = e.codigo_planilha
+        JOIN produtos_catalogo p ON p.id = $7
+        JOIN tb_produto_dieese tp ON tp.codigo_dieese = p.codigo_produto
+        WHERE e.id = $6
+      `, [
+        precos.precoFinal,
+        prod.data ? new Date(prod.data) : null,
+        alertaOutlier,
+        motivoAlerta,
+        JSON.stringify(oferta),
+        estabelecimentoId,
+        produtoId
+      ]);
+    } catch (syncV2Err) {
+      // Ignora se a tabela ainda não tiver sido inicializada
     }
 
     return res.rows[0].id;
