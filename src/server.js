@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { pool } from './db.js';
 import { PrecoDaHoraCollector } from './collector.js';
@@ -711,6 +712,48 @@ app.post('/api/notificar-ntfy', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+// Auto-inicialização de schema e catálogo de produtos/mercados
+async function autoInitDatabase() {
+  try {
+    const check = await pool.query("SELECT to_regclass('public.estabelecimentos') as tbl");
+    if (!check.rows[0].tbl) {
+      console.log('⚙️ Inicializando schema e tabelas no banco de dados...');
+      const schemaSql = fs.readFileSync(path.resolve('schema.sql'), 'utf8');
+      await pool.query(schemaSql);
+      console.log('✅ Schema criado com sucesso.');
+
+      if (fs.existsSync(path.resolve('seed-data.sql'))) {
+        console.log('🌱 Inserindo catálogo de produtos e estabelecimentos...');
+        const seedSql = fs.readFileSync(path.resolve('seed-data.sql'), 'utf8');
+        await pool.query(seedSql);
+        console.log('✅ Dados iniciais populados com sucesso!');
+      }
+    }
+  } catch (err) {
+    console.error('⚠️ Aviso durante auto-inicialização do banco:', err.message);
+  }
+}
+
+// Endpoint para inicialização manual forçada do banco
+app.post('/api/setup-db', async (req, res) => {
+  try {
+    const schemaSql = fs.readFileSync(path.resolve('schema.sql'), 'utf8');
+    await pool.query(schemaSql);
+
+    let seedApplied = false;
+    if (fs.existsSync(path.resolve('seed-data.sql'))) {
+      const seedSql = fs.readFileSync(path.resolve('seed-data.sql'), 'utf8');
+      await pool.query(seedSql);
+      seedApplied = true;
+    }
+
+    res.json({ success: true, message: 'Banco inicializado com sucesso', seedApplied });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.listen(PORT, async () => {
   console.log(`🌐 Servidor Preço da Hora DIEESE rodando em: http://localhost:${PORT}`);
+  await autoInitDatabase();
 });
