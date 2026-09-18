@@ -14,7 +14,29 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.resolve('public')));
+
+// Rota raiz: Backend Headless API (Sem frontend)
+app.get('/', (req, res) => {
+  res.json({
+    service: 'Preço da Hora BA - Backend API de Coleta DIEESE',
+    status: 'online',
+    version: '1.0.0',
+    mode: 'headless_backend',
+    description: 'Serviço backend para consulta automatizada de NFC-e na SEFAZ e persistência em banco de dados PostgreSQL.',
+    endpoints: {
+      status: 'GET /api/status',
+      iniciarColeta: 'POST /api/coleta/iniciar',
+      progressoColeta: 'GET /api/coleta/progresso',
+      cancelarColeta: 'POST /api/coleta/cancelar',
+      historicoColetas: 'GET /api/coleta/historico',
+      produtos: 'GET /api/produtos',
+      estabelecimentos: 'GET /api/estabelecimentos',
+      precos: 'GET /api/precos',
+      matriz: 'GET /api/matriz',
+      webhook: 'POST /api/webhook/coleta'
+    }
+  });
+});
 
 // Estado global de coleta em background
 let coletaAtiva = {
