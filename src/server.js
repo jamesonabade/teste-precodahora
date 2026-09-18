@@ -1024,6 +1024,74 @@ app.post('/api/v2/coleta-robo', async (req, res) => {
   }
 });
 
+// Obter configuração ativa da automação (tb_configuracao_automacao)
+app.get('/api/v2/configuracao', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM tb_configuracao_automacao
+      WHERE ativo = TRUE
+      ORDER BY id_configuracao DESC
+      LIMIT 1
+    `);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Nenhuma configuração ativa encontrada.' });
+    }
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Atualizar parâmetros da automação (tb_configuracao_automacao)
+app.put('/api/v2/configuracao', async (req, res) => {
+  try {
+    const body = req.body;
+    const current = await pool.query(`SELECT id_configuracao FROM tb_configuracao_automacao WHERE ativo = TRUE ORDER BY id_configuracao DESC LIMIT 1`);
+    if (current.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Configuração não encontrada.' });
+    }
+    const idConfig = current.rows[0].id_configuracao;
+
+    const result = await pool.query(`
+      UPDATE tb_configuracao_automacao
+      SET 
+        hora_inicio_janela = COALESCE($1, hora_inicio_janela),
+        hora_fim_janela = COALESCE($2, hora_fim_janela),
+        apenas_vendas_do_dia = COALESCE($3, apenas_vendas_do_dia),
+        cron_agendamento = COALESCE($4, cron_agendamento),
+        tentativas_max_retry = COALESCE($5, tentativas_max_retry),
+        intervalo_retry_minutos = COALESCE($6, intervalo_retry_minutos),
+        raio_padrao_km = COALESCE($7, raio_padrao_km),
+        ignorar_descontos_promocoes = COALESCE($8, ignorar_descontos_promocoes),
+        percentual_alerta_outlier = COALESCE($9, percentual_alerta_outlier),
+        notificacoes_ativas = COALESCE($10, notificacoes_ativas),
+        ntfy_topico_url = COALESCE($11, ntfy_topico_url),
+        parametros_extras = COALESCE($12, parametros_extras),
+        updated_at = NOW()
+      WHERE id_configuracao = $13
+      RETURNING *
+    `, [
+      body.hora_inicio_janela,
+      body.hora_fim_janela,
+      body.apenas_vendas_do_dia,
+      body.cron_agendamento,
+      body.tentativas_max_retry,
+      body.intervalo_retry_minutos,
+      body.raio_padrao_km,
+      body.ignorar_descontos_promocoes,
+      body.percentual_alerta_outlier,
+      body.notificacoes_ativas,
+      body.ntfy_topico_url,
+      body.parametros_extras ? JSON.stringify(body.parametros_extras) : null,
+      idConfig
+    ]);
+
+    res.json({ success: true, message: 'Configurações de automação atualizadas com sucesso', data: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Auto-inicialização de schema e catálogo de produtos/mercados
 async function autoInitDatabase() {
   try {
