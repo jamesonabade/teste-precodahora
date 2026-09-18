@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS tb_estabelecimento (
 -- Tabela 2: Catálogo de Produtos DIEESE
 CREATE TABLE IF NOT EXISTS tb_produto_dieese (
     id_produto SERIAL PRIMARY KEY,
-    codigo_dieese VARCHAR(50) NOT NULL UNIQUE,  -- Ex: '1.1.05.01'
+    codigo_dieese VARCHAR(50) NOT NULL,         -- Ex: '1.1.05.01'
     descricao_item VARCHAR(255) NOT NULL,       -- Ex: 'Açúcar Cristal Vida 1Kg'
     codigo_barras VARCHAR(50),                  -- EAN / GTIN utilizado pelo robô
     volume_peso NUMERIC(10, 3),                 -- Quantidade / Peso unitário
@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS tb_produto_dieese (
     status_ativo BOOLEAN DEFAULT TRUE NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE tb_produto_dieese DROP CONSTRAINT IF EXISTS tb_produto_dieese_codigo_dieese_key;
 
 -- Tabela 3: Usuários (Robôs e Validadores Humanos)
 CREATE TABLE IF NOT EXISTS tb_usuario (
