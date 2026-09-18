@@ -849,6 +849,27 @@ app.post('/api/notificar-ntfy', async (req, res) => {
 async function autoInitDatabase() {
   try {
     console.log('⚙️ Verificando e atualizando schema no banco de dados...');
+    
+    // Migração de resiliência: permitir NULL e criar índice único
+    try {
+      await pool.query('ALTER TABLE precos_coletados ALTER COLUMN preco_final_coletado DROP NOT NULL;');
+      await pool.query(`
+        DELETE FROM precos_coletados a
+        USING precos_coletados b
+        WHERE a.id < b.id
+          AND a.coleta_id = b.coleta_id
+          AND a.estabelecimento_id = b.estabelecimento_id
+          AND a.produto_id = b.produto_id;
+      `);
+      await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_precos_coleta_estab_prod 
+        ON precos_coletados (coleta_id, estabelecimento_id, produto_id);
+      `);
+      console.log('✅ Índice único uq_precos_coleta_estab_prod ativo.');
+    } catch (migErr) {
+      console.warn('Aviso migração uq_precos_coleta_estab_prod:', migErr.message);
+    }
+
     const schemaSql = fs.readFileSync(path.resolve('schema.sql'), 'utf8');
     await pool.query(schemaSql);
     console.log('✅ Schema e colunas conferidos com sucesso.');
