@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:latest
+    container_name: precodahora-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: precodahora
+      POSTGRES_PASSWORD: precodahora_pwd
+      POSTGRES_DB: precodahora_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - precodahora_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U precodahora -d precodahora_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  precodahora_pgdata:
+    driver: local

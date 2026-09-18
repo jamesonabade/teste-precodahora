@@ -1,0 +1,28 @@
+{
+  "name": "teste-precodahora",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:init": "node src/init-db.js",
+    "db:seed": "node src/seed-data.js",
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "collect:sample": "node src/sample-runner.js",
+    "collect:full": "node src/full-runner.js",
+    "test": "node src/sample-runner.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "pg": "^8.23.0",
+    "precodahora-ba": "^2.0.0",
+    "xlsx": "^0.18.5"
+  }
+}
