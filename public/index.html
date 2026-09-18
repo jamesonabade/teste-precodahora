@@ -87,146 +87,173 @@
     </nav>
   </header>
 
-  <!-- Métricas Rápidas (KPIs) -->
-  <section class="kpi-section">
-    <div class="kpi-card">
-      <span class="kpi-label">Mercados Ativos</span>
-      <span class="kpi-value" id="kpiMercados">40</span>
-      <span class="kpi-sub" id="kpiCnpjEnriquecidos">CNPJs: Carregando...</span>
+  <!-- Barra Compacta de Métricas (KPIs) -->
+  <section class="kpi-strip">
+    <div class="kpi-pill">
+      <span class="kpi-pill-icon">🏪</span>
+      <div class="kpi-pill-content">
+        <span class="kpi-pill-value" id="kpiMercados">40</span>
+        <span class="kpi-pill-label">Mercados</span>
+      </div>
     </div>
-    <div class="kpi-card">
-      <span class="kpi-label">Produtos no Catálogo</span>
-      <span class="kpi-value" id="kpiProdutos">76</span>
-      <span class="kpi-sub">Cesta Básica Normalizada</span>
+    <div class="kpi-pill">
+      <span class="kpi-pill-icon">🛒</span>
+      <div class="kpi-pill-content">
+        <span class="kpi-pill-value" id="kpiProdutos">152</span>
+        <span class="kpi-pill-label">Produtos Cesta</span>
+      </div>
     </div>
-    <div class="kpi-card">
-      <span class="kpi-label">Preços Registrados</span>
-      <span class="kpi-value highlight-blue" id="kpiPrecosColetados">0</span>
-      <span class="kpi-sub" id="kpiUltimaColeta">Última coleta: —</span>
+    <div class="kpi-pill kpi-pill-highlight">
+      <span class="kpi-pill-icon">🎯</span>
+      <div class="kpi-pill-content">
+        <span class="kpi-pill-value" id="kpiPrecosHoje">0</span>
+        <span class="kpi-pill-label">Preços Coletados Hoje</span>
+      </div>
     </div>
-    <div class="kpi-card">
-      <span class="kpi-label">Conferidos pelo Crítico</span>
-      <span class="kpi-value highlight-green" id="kpiConferidos">0</span>
-      <span class="kpi-sub" id="kpiPercentConferidos">0% auditados</span>
+    <div class="kpi-pill kpi-pill-warning">
+      <span class="kpi-pill-icon">⏳</span>
+      <div class="kpi-pill-content">
+        <span class="kpi-pill-value" id="kpiPendentesHoje">152</span>
+        <span class="kpi-pill-label">Aguardando Venda</span>
+      </div>
     </div>
-    <div class="kpi-card alert-card">
-      <span class="kpi-label">Alertas de Crítica (>50%)</span>
-      <span class="kpi-value highlight-red" id="kpiAlertas">0</span>
-      <span class="kpi-sub">Variação alta de preço</span>
+    <div class="kpi-pill kpi-pill-danger">
+      <span class="kpi-pill-icon">⚠️</span>
+      <div class="kpi-pill-content">
+        <span class="kpi-pill-value" id="kpiAlertas">0</span>
+        <span class="kpi-pill-label">Alertas >50%</span>
+      </div>
+    </div>
+    <div class="kpi-pill kpi-pill-success">
+      <span class="kpi-pill-icon">✓</span>
+      <div class="kpi-pill-content">
+        <span class="kpi-pill-value" id="kpiConferidos">0</span>
+        <span class="kpi-pill-label">Conferidos</span>
+      </div>
     </div>
   </section>
 
   <!-- ==================== ABA 1: MATRIZ DE COLETA & CRÍTICA ==================== -->
   <section id="tab-matriz" class="tab-pane active">
-    <!-- Barra de Filtros e Pesquisa -->
-    <div class="filter-bar">
-      <div class="filter-group">
-        <label for="filtroSemana">Semana DIEESE:</label>
-        <select id="filtroSemana">
-          <option value="">Todas as Semanas (M1 a M40)</option>
-          <option value="1">Semana 1 (M1 a M10)</option>
-          <option value="2">Semana 2 (M11 a M20)</option>
-          <option value="3">Semana 3 (M21 a M30)</option>
-          <option value="4">Semana 4 (M31 a M40)</option>
-        </select>
+    <!-- Toolbar Principal e Clean -->
+    <div class="clean-toolbar">
+      <!-- Linha 1: Controles Rápidos -->
+      <div class="toolbar-primary-row">
+        <!-- Campo de Busca -->
+        <div class="search-box-clean">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="buscaTexto" placeholder="Buscar produto, marca, código DIEESE ou GTIN..." autocomplete="off">
+        </div>
+
+        <!-- Seletor de Mercado em Destaque -->
+        <div class="toolbar-field">
+          <label for="filtroMercado">Mercado:</label>
+          <select id="filtroMercado">
+            <option value="">Todos os 40 Mercados (M1 a M40)</option>
+          </select>
+        </div>
+
+        <!-- Alternador de Visualização (Matriz vs Cartões Focados) -->
+        <div class="view-mode-toggle">
+          <button type="button" id="btnModoMatriz" class="view-btn active" title="Visualização em Tabela Matriz">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            <span>Matriz</span>
+          </button>
+          <button type="button" id="btnModoCards" class="view-btn" title="Visualização em Lista Focada (Ideal para telas menores)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            <span>Focado</span>
+          </button>
+        </div>
+
+        <!-- Botão Abrir Filtros Avançados -->
+        <button type="button" id="btnToggleFiltrosAvancados" class="btn btn-clean-secondary" title="Filtros adicionais">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+          <span>Filtros</span>
+        </button>
       </div>
 
-      <div class="filter-group">
-        <label for="filtroMercado">🏪 Mercado (M):</label>
-        <select id="filtroMercado">
-          <option value="">Todos os Mercados (M1 a M40)</option>
-        </select>
+      <!-- Linha 2: Filtros de Semana (Pills Rápidas) + Checkbox Hoje -->
+      <div class="toolbar-secondary-row">
+        <div class="semanas-quick-pills">
+          <span class="pills-label">Semana:</span>
+          <button type="button" class="semana-pill active" data-semana="">Todas</button>
+          <button type="button" class="semana-pill" data-semana="1">Sem 1 (M1-10)</button>
+          <button type="button" class="semana-pill" data-semana="2">Sem 2 (M11-20)</button>
+          <button type="button" class="semana-pill" data-semana="3">Sem 3 (M21-30)</button>
+          <button type="button" class="semana-pill" data-semana="4">Sem 4 (M31-40)</button>
+        </div>
+
+        <div class="toolbar-actions-right">
+          <label class="clean-checkbox-label">
+            <input type="checkbox" id="checkApenasHoje">
+            <span>📅 Cupons de Hoje (05h-21h)</span>
+          </label>
+          <button type="button" id="btnToggleLegenda" class="btn-clean-ghost" title="Ver legenda de cores e status">
+            <span>ℹ️ Legenda</span>
+          </button>
+        </div>
       </div>
 
-      <div class="filter-group">
-        <label for="filtroDiaSemana">📅 Dia da Semana:</label>
-        <select id="filtroDiaSemana">
-          <option value="">Todos os Dias</option>
-          <option value="Segunda-Feira">Segunda-Feira</option>
-          <option value="Terça-Feira">Terça-Feira</option>
-          <option value="Quarta-Feira">Quarta-Feira</option>
-          <option value="Quinta-Feira">Quinta-Feira</option>
-          <option value="Sexta-Feira">Sexta-Feira</option>
-        </select>
+      <!-- Painel Recolhível de Filtros Avançados -->
+      <div id="painelFiltrosAvancados" class="advanced-filters-panel hidden">
+        <div class="filter-group">
+          <label for="filtroCategoria">Categoria:</label>
+          <select id="filtroCategoria">
+            <option value="">Todas as Categorias</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="filtroDiaSemana">Dia da Semana:</label>
+          <select id="filtroDiaSemana">
+            <option value="">Todos os Dias</option>
+            <option value="Segunda-Feira">Segunda-Feira</option>
+            <option value="Terça-Feira">Terça-Feira</option>
+            <option value="Quarta-Feira">Quarta-Feira</option>
+            <option value="Quinta-Feira">Quinta-Feira</option>
+            <option value="Sexta-Feira">Sexta-Feira</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="filtroDataColeta">Data Coleta:</label>
+          <input type="date" id="filtroDataColeta">
+        </div>
+        <div class="filter-group">
+          <label for="filtroStatusConferencia">Status Crítica:</label>
+          <select id="filtroStatusConferencia">
+            <option value="">Todos os Status</option>
+            <option value="CONFERIDO">Apenas Conferidos (🟢)</option>
+            <option value="PENDENTE">Apenas Pendentes (🟡)</option>
+            <option value="ALERTA">Apenas com Alerta &gt;50% (🔴)</option>
+          </select>
+        </div>
+        <button type="button" id="btnLimparFiltros" class="btn btn-sm btn-secondary">Limpar Filtros</button>
       </div>
 
-      <div class="filter-group">
-        <label for="filtroDataColeta">🕒 Data da Coleta:</label>
-        <input type="date" id="filtroDataColeta" title="Filtrar por data específica da coleta">
-      </div>
-
-      <div class="filter-group">
-        <label for="filtroCategoria">Categoria:</label>
-        <select id="filtroCategoria">
-          <option value="">Todas as Categorias</option>
-        </select>
-      </div>
-
-      <div class="filter-group">
-        <label for="filtroStatusConferencia">Status Crítica:</label>
-        <select id="filtroStatusConferencia">
-          <option value="">Todos os Status</option>
-          <option value="CONFERIDO">Apenas Conferidos (🟢)</option>
-          <option value="PENDENTE">Apenas Pendentes (🟡)</option>
-          <option value="ALERTA">Apenas com Alerta &gt;50% (🔴)</option>
-        </select>
-      </div>
-
-      <div class="filter-group search-group">
-        <label for="buscaTexto">Buscar Item:</label>
-        <input type="text" id="buscaTexto" placeholder="Ex: Açúcar, Café, Leite, GTIN...">
-      </div>
-
-      <div class="filter-group filter-checkbox" style="display: flex; align-items: flex-end; padding-bottom: 0.5rem;">
-        <label style="cursor: pointer; display: flex; align-items: center; gap: 0.4rem; font-weight: 600; font-size: 0.85rem; color: #1e293b;">
-          <input type="checkbox" id="checkApenasHoje" style="width: 16px; height: 16px; cursor: pointer;">
-          <span>📅 Cupons de Hoje (05h-21h)</span>
-        </label>
-      </div>
-      <div class="filter-group filter-actions">
-        <button type="button" id="btnLimparFiltros" class="btn btn-secondary" title="Limpar todos os filtros aplicados">Limpar Filtros</button>
-      </div>
-    </div>
-
-    <!-- Legenda de Status e Auditoria -->
-    <div class="business-rules-banner">
-      <div class="rule-item">
+      <!-- Popover / Barra da Legenda Compacta -->
+      <div id="painelLegenda" class="legend-panel hidden">
         <span class="status-badge badge-conferido">🟢 Conferido</span>
-        Auditado e aprovado pelo crítico.
-      </div>
-      <div class="rule-item">
         <span class="status-badge badge-pendente">🟡 Pendente</span>
-        Coletado pelo robô, aguardando validação.
-      </div>
-      <div class="rule-item">
         <span class="status-badge badge-alerta">🔴 Alerta &gt;50%</span>
-        Variação maior que 50% em relação ao mês anterior.
-      </div>
-      <div class="rule-item">
         <span class="status-badge badge-ajustado">🔵 Ajustado</span>
-        Preço corrigido manualmente na crítica.
-      </div>
-      <div class="rule-item">
-        <span class="status-badge badge-nao-encontrado">✕ Não Encontrado</span>
-        Sem registro de vendas na SEFAZ (últimas 72h).
-      </div>
-      <div class="rule-item text-muted">
-        💡 <em>Passe o mouse sobre qualquer preço para ver o horário exato da coleta e da NFC-e. Clique para
-          auditar.</em>
+        <span class="status-badge badge-nao-encontrado">✕ Aguardando Venda</span>
+        <span class="legend-tip">💡 Clique no preço para auditar/ajustar</span>
       </div>
     </div>
 
-    <!-- Matriz Tabela -->
-    <div class="matrix-container">
+    <!-- Container 1: Tabela Matriz Tradicional (Desktop / Amplo) -->
+    <div class="matrix-container" id="containerModoMatriz">
       <div class="table-scroll" id="tableContainer">
         <table class="dieese-table" id="matrizTable">
           <thead>
             <tr id="theadRow1">
               <th class="col-sticky col-item">Item / Produto</th>
               <th class="col-sticky col-codigo">Código</th>
-              <th class="col-sticky col-marca">Marca / Especificação</th>
-              <th class="col-sticky col-gtin">Cód. Barras</th>
-              <th class="col-sticky col-media-ant">Média Ant.</th>
+              <th class="col-marca">Marca / Especificação</th>
+              <th class="col-gtin">Cód. Barras</th>
+              <th class="col-media-ant">Média Ant.</th>
               <!-- Mercados dinâmicos aqui -->
             </tr>
           </thead>
@@ -237,6 +264,12 @@
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- Container 2: Modo Cartões / Visão Focada (Perfeito para telas menores / celular / tablet) -->
+    <div class="focused-cards-container hidden" id="containerModoCards">
+      <div class="focused-header" id="focusedHeaderMercado"></div>
+      <div class="cards-grid" id="cardsGridProdutos"></div>
     </div>
   </section>
 

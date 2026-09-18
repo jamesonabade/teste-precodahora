@@ -43,11 +43,19 @@ app.get('/api/status', async (req, res) => {
         (SELECT COUNT(*) FROM estabelecimentos WHERE ativo = TRUE) as total_estabelecimentos,
         (SELECT COUNT(*) FROM estabelecimentos WHERE ativo = TRUE AND cnpj IS NOT NULL) as total_estabelecimentos_com_cnpj,
         (SELECT COUNT(*) FROM produtos_catalogo WHERE ativo = TRUE) as total_produtos,
-        (SELECT COUNT(*) FROM precos_coletados) as total_precos_coletados,
+        (SELECT COUNT(*) FROM precos_coletados WHERE preco_final_coletado IS NOT NULL AND preco_final_coletado > 0) as total_precos_coletados,
+        (SELECT COUNT(*) FROM precos_coletados WHERE preco_final_coletado IS NOT NULL AND preco_final_coletado > 0 AND DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE) as total_precos_hoje,
+        (SELECT COUNT(*) FROM produtos_catalogo pc WHERE pc.ativo = TRUE AND pc.id NOT IN (
+          SELECT DISTINCT produto_id FROM precos_coletados 
+          WHERE DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
+          AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
+          AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
+          AND preco_final_coletado IS NOT NULL
+        )) as total_pendentes_hoje,
         (SELECT COUNT(*) FROM precos_coletados WHERE status_conferencia = 'CONFERIDO') as total_conferidos,
         (SELECT COUNT(*) FROM precos_coletados WHERE alerta_outlier = TRUE) as total_alertas_outliers,
         (SELECT COUNT(*) FROM historico_medias) as total_medias_historicas,
-        (SELECT MAX(data_coleta) FROM precos_coletados) as ultima_coleta_data
+        (SELECT MAX(data_coleta) FROM precos_coletados WHERE preco_final_coletado IS NOT NULL) as ultima_coleta_data
     `);
 
     res.json({

@@ -16,18 +16,29 @@ const btnRecarregar = document.getElementById('btnRecarregar');
 
 // KPIs
 const kpiMercados = document.getElementById('kpiMercados');
-const kpiCnpjEnriquecidos = document.getElementById('kpiCnpjEnriquecidos');
 const kpiProdutos = document.getElementById('kpiProdutos');
-const kpiPrecosColetados = document.getElementById('kpiPrecosColetados');
-const kpiUltimaColeta = document.getElementById('kpiUltimaColeta');
+const kpiPrecosHoje = document.getElementById('kpiPrecosHoje');
+const kpiPendentesHoje = document.getElementById('kpiPendentesHoje');
 const kpiConferidos = document.getElementById('kpiConferidos');
-const kpiPercentConferidos = document.getElementById('kpiPercentConferidos');
 const kpiAlertas = document.getElementById('kpiAlertas');
+
+// Controles Clean & Modos de Visualização
+let modoVisualizacao = window.innerWidth <= 768 ? 'cards' : 'matriz';
+const btnModoMatriz = document.getElementById('btnModoMatriz');
+const btnModoCards = document.getElementById('btnModoCards');
+const containerModoMatriz = document.getElementById('containerModoMatriz');
+const containerModoCards = document.getElementById('containerModoCards');
+const focusedHeaderMercado = document.getElementById('focusedHeaderMercado');
+const cardsGridProdutos = document.getElementById('cardsGridProdutos');
+const btnToggleFiltrosAvancados = document.getElementById('btnToggleFiltrosAvancados');
+const painelFiltrosAvancados = document.getElementById('painelFiltrosAvancados');
+const btnToggleLegenda = document.getElementById('btnToggleLegenda');
+const painelLegenda = document.getElementById('painelLegenda');
 
 // Tabela Matriz DIEESE
 const tbodyMatriz = document.getElementById('tbodyMatriz');
 const theadRow1 = document.getElementById('theadRow1');
-const filtroSemana = document.getElementById('filtroSemana');
+const filtroSemana = document.getElementById('filtroSemana') || { value: '' };
 const filtroMercado = document.getElementById('filtroMercado');
 const filtroDiaSemana = document.getElementById('filtroDiaSemana');
 const filtroDataColeta = document.getElementById('filtroDataColeta');
@@ -118,17 +129,64 @@ function setupEventListeners() {
     if (activeTab === 'tab-logs') carregarHistoricoExecucoes();
   });
 
+  // Alternador de Visualização (Matriz vs Cards)
+  if (btnModoMatriz) {
+    btnModoMatriz.addEventListener('click', () => setModoVisualizacao('matriz'));
+  }
+  if (btnModoCards) {
+    btnModoCards.addEventListener('click', () => setModoVisualizacao('cards'));
+  }
+
+  // Toggle Filtros Avançados
+  if (btnToggleFiltrosAvancados && painelFiltrosAvancados) {
+    btnToggleFiltrosAvancados.addEventListener('click', () => {
+      painelFiltrosAvancados.classList.toggle('hidden');
+    });
+  }
+
+  // Toggle Legenda
+  if (btnToggleLegenda && painelLegenda) {
+    btnToggleLegenda.addEventListener('click', () => {
+      painelLegenda.classList.toggle('hidden');
+    });
+  }
+
+  // Pills Rápidas de Semana
+  document.querySelectorAll('.semana-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('.semana-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      if (filtroSemana) filtroSemana.value = pill.dataset.semana || '';
+      carregarMatriz();
+    });
+  });
+
   // Filtros da Matriz
-  filtroSemana.addEventListener('change', () => carregarMatriz());
-  filtroMercado.addEventListener('change', () => carregarMatriz());
+  if (filtroSemana && filtroSemana.addEventListener) filtroSemana.addEventListener('change', () => carregarMatriz());
+  filtroMercado.addEventListener('change', () => {
+    if (modoVisualizacao === 'cards') renderizarCardsFocados();
+    else carregarMatriz();
+  });
   filtroDiaSemana.addEventListener('change', () => carregarMatriz());
   filtroDataColeta.addEventListener('change', () => carregarMatriz());
-  filtroCategoria.addEventListener('change', () => renderizarTabela());
-  filtroStatusConferencia.addEventListener('change', () => renderizarTabela());
-  buscaTexto.addEventListener('input', () => renderizarTabela());
+  filtroCategoria.addEventListener('change', () => {
+    if (modoVisualizacao === 'cards') renderizarCardsFocados();
+    else renderizarTabela();
+  });
+  filtroStatusConferencia.addEventListener('change', () => {
+    if (modoVisualizacao === 'cards') renderizarCardsFocados();
+    else renderizarTabela();
+  });
+  buscaTexto.addEventListener('input', () => {
+    if (modoVisualizacao === 'cards') renderizarCardsFocados();
+    else renderizarTabela();
+  });
 
   const checkApenasHoje = document.getElementById('checkApenasHoje');
-  if (checkApenasHoje) checkApenasHoje.addEventListener('change', () => renderizarTabela());
+  if (checkApenasHoje) checkApenasHoje.addEventListener('change', () => {
+    if (modoVisualizacao === 'cards') renderizarCardsFocados();
+    else renderizarTabela();
+  });
 
   if (btnLimparFiltros) btnLimparFiltros.addEventListener('click', limparTodosFiltros);
 
@@ -205,6 +263,25 @@ function setupEventListeners() {
   filtroCrudSemana.addEventListener('change', () => renderizarCrudMercados());
 }
 
+function setModoVisualizacao(modo) {
+  modoVisualizacao = modo;
+  if (!btnModoCards || !btnModoMatriz) return;
+
+  if (modo === 'cards') {
+    btnModoCards.classList.add('active');
+    btnModoMatriz.classList.remove('active');
+    if (containerModoMatriz) containerModoMatriz.classList.add('hidden');
+    if (containerModoCards) containerModoCards.classList.remove('hidden');
+    renderizarCardsFocados();
+  } else {
+    btnModoMatriz.classList.add('active');
+    btnModoCards.classList.remove('active');
+    if (containerModoCards) containerModoCards.classList.add('hidden');
+    if (containerModoMatriz) containerModoMatriz.classList.remove('hidden');
+    renderizarTabela();
+  }
+}
+
 function abrirModal(modal) { if (modal) modal.classList.remove('hidden'); }
 function fecharModal(modal) {
   if (!modal) {
@@ -235,24 +312,12 @@ async function carregarStatus() {
     if (!json.success) return;
 
     const d = json.data;
-    kpiMercados.textContent = d.total_estabelecimentos || 40;
-    kpiCnpjEnriquecidos.textContent = `CNPJs conhecidos: ${d.total_estabelecimentos_com_cnpj || 0}`;
-    kpiProdutos.textContent = d.total_produtos || 76;
-    kpiPrecosColetados.textContent = d.total_precos_coletados || 0;
-    kpiAlertas.textContent = d.total_alertas_outliers || 0;
-    kpiConferidos.textContent = d.total_conferidos || 0;
-
-    const total = Number(d.total_precos_coletados) || 0;
-    const conf = Number(d.total_conferidos) || 0;
-    const percConf = total > 0 ? ((conf / total) * 100).toFixed(0) : 0;
-    kpiPercentConferidos.textContent = `${percConf}% dos coletados`;
-
-    if (d.ultima_coleta_data) {
-      const dataHora = new Date(d.ultima_coleta_data).toLocaleString('pt-BR');
-      kpiUltimaColeta.textContent = `Última: ${dataHora}`;
-    } else {
-      kpiUltimaColeta.textContent = 'Sem coletas ainda';
-    }
+    if (kpiMercados) kpiMercados.textContent = d.total_estabelecimentos || 40;
+    if (kpiProdutos) kpiProdutos.textContent = d.total_produtos || 152;
+    if (kpiPrecosHoje) kpiPrecosHoje.textContent = d.total_precos_hoje ?? d.total_precos_coletados ?? 0;
+    if (kpiPendentesHoje) kpiPendentesHoje.textContent = d.total_pendentes_hoje ?? (d.total_produtos - (d.total_precos_hoje || 0));
+    if (kpiAlertas) kpiAlertas.textContent = d.total_alertas_outliers || 0;
+    if (kpiConferidos) kpiConferidos.textContent = d.total_conferidos || 0;
 
     if (json.coletaAtiva?.emExecucao) {
       iniciarPollingProgresso();
@@ -290,7 +355,7 @@ async function carregarMatriz() {
     tbodyMatriz.innerHTML = `<tr><td colspan="15" class="loading-td">Carregando matriz de dados...</td></tr>`;
 
     const params = new URLSearchParams();
-    if (filtroSemana.value) params.append('semana', filtroSemana.value);
+    if (filtroSemana && filtroSemana.value) params.append('semana', filtroSemana.value);
     if (filtroMercado.value) params.append('mercado', filtroMercado.value);
     if (filtroDiaSemana.value) params.append('diaSemana', filtroDiaSemana.value);
     if (filtroDataColeta.value) params.append('dataColeta', filtroDataColeta.value);
@@ -308,9 +373,14 @@ async function carregarMatriz() {
     appData = json.data;
     popularCategoriasSelect(appData.produtos);
     renderizarCabecalhoTabela(appData.estabelecimentos);
-    renderizarTabela();
+
+    if (modoVisualizacao === 'cards') {
+      renderizarCardsFocados();
+    } else {
+      renderizarTabela();
+    }
   } catch (err) {
-    tbodyMatriz.innerHTML = `<tr><td colspan="15" class="cell-alert">Falha na conexão com a API local.</td></tr>`;
+    tbodyMatriz.innerHTML = `<tr><td colspan="15" class="cell-alert">Falha na conexão com a API local: ${err.message}</td></tr>`;
   }
 }
 
@@ -505,9 +575,9 @@ function renderizarTabela() {
       <tr>
         <td class="col-sticky col-item">${escapeHtml(prod.item_cesta || '—')}</td>
         <td class="col-sticky col-codigo">${escapeHtml(prod.codigo_produto || '—')}</td>
-        <td class="col-sticky col-marca">${escapeHtml(prod.marca_especificacao || '—')}</td>
-        <td class="col-sticky col-gtin">${escapeHtml(prod.gtin || 'Granel')}</td>
-        <td class="col-sticky col-media-ant">${mediaAntFormatada}</td>
+        <td class="col-marca">${escapeHtml(prod.marca_especificacao || '—')}</td>
+        <td class="col-gtin">${escapeHtml(prod.gtin || 'Granel')}</td>
+        <td class="col-media-ant">${mediaAntFormatada}</td>
         ${precosCelsHtml}
         <td class="td-resumo">${mediaAtual}</td>
         <td class="td-resumo">${minAtual}</td>
@@ -518,6 +588,123 @@ function renderizarTabela() {
   });
 
   tbodyMatriz.innerHTML = html;
+}
+
+// ==================== VISÃO FOCADA / MODO CARTÕES ====================
+function renderizarCardsFocados() {
+  if (!cardsGridProdutos) return;
+
+  const { produtos, estabelecimentos, precosMap } = appData;
+  const termoBusca = buscaTexto.value.toLowerCase().trim();
+  const catSelecionada = filtroCategoria.value;
+  const statusFiltro = filtroStatusConferencia.value;
+  const apenasHojeAtivo = document.getElementById('checkApenasHoje')?.checked;
+  const mercadoFiltroVal = filtroMercado.value;
+
+  // Mercado selecionado para foco (se vazio, usa o primeiro estabelecimento ou o que o usuário escolher)
+  let mercadoFoco = estabelecimentos.find(e => e.codigo_planilha === mercadoFiltroVal || String(e.id) === String(mercadoFiltroVal));
+  if (!mercadoFoco && estabelecimentos.length > 0) {
+    mercadoFoco = estabelecimentos[0];
+  }
+
+  if (focusedHeaderMercado && mercadoFoco) {
+    const cnpjFmt = mercadoFoco.cnpj ? formatarCnpj(mercadoFoco.cnpj) : 'CNPJ não informado';
+    const endFmt = mercadoFoco.endereco_completo || `${mercadoFoco.bairro || 'Centro'}, Vitória da Conquista - BA`;
+    focusedHeaderMercado.innerHTML = `
+      <div class="focused-mercado-title">
+        <span>🏪 [${escapeHtml(mercadoFoco.codigo_planilha)}] ${escapeHtml(mercadoFoco.nome)}</span>
+      </div>
+      <div class="focused-mercado-sub">
+        📍 ${escapeHtml(endFmt)} &nbsp;|&nbsp; 🏢 ${escapeHtml(cnpjFmt)} &nbsp;|&nbsp; 📅 Semana ${mercadoFoco.semana_coleta || '—'} (${escapeHtml(mercadoFoco.dia_semana || '')})
+      </div>
+    `;
+  }
+
+  let produtosFiltrados = produtos.filter(p => {
+    if (catSelecionada && p.categoria !== catSelecionada) return false;
+    if (termoBusca) {
+      const texto = `${p.item_cesta} ${p.marca_especificacao} ${p.codigo_produto} ${p.gtin || ''}`.toLowerCase();
+      if (!texto.includes(termoBusca)) return false;
+    }
+    return true;
+  });
+
+  if (statusFiltro && mercadoFoco) {
+    produtosFiltrados = produtosFiltrados.filter(p => {
+      const preco = precosMap[`${p.id}_${mercadoFoco.id}`];
+      if (!preco) return false;
+      if (statusFiltro === 'ALERTA') return preco.alerta_outlier;
+      return preco.status_conferencia === statusFiltro;
+    });
+  }
+
+  if (produtosFiltrados.length === 0) {
+    cardsGridProdutos.innerHTML = `
+      <div class="cell-empty" style="grid-column: 1 / -1; padding: 2.5rem; text-align: center; background: white; border-radius: 8px;">
+        Nenhum produto encontrado com os filtros selecionados.
+      </div>
+    `;
+    return;
+  }
+
+  let htmlCards = '';
+  produtosFiltrados.forEach(prod => {
+    const precoObj = mercadoFoco ? precosMap[`${prod.id}_${mercadoFoco.id}`] : null;
+    let precoValHtml = '<span class="card-price-val pending">⏳ Aguardando Venda</span>';
+    let statusBadge = '<span class="status-badge badge-nao-encontrado">Sem Venda</span>';
+    let horaNfeStr = 'Nenhum cupom hoje (05h às 21h)';
+    let precoIdAudit = null;
+
+    if (precoObj && precoObj.preco_final_coletado && Number(precoObj.preco_final_coletado) > 0) {
+      const emitidoHoje = isNfeValidaHoje(precoObj.data_emissao_nfe);
+      if (!apenasHojeAtivo || emitidoHoje) {
+        const val = Number(precoObj.preco_final_coletado).toFixed(2);
+        precoIdAudit = precoObj.id;
+        
+        if (precoObj.alerta_outlier) {
+          statusBadge = '<span class="status-badge badge-alerta">🔴 Alerta >50%</span>';
+          precoValHtml = `<span class="card-price-val alert">R$ ${val}</span>`;
+        } else if (precoObj.status_conferencia === 'CONFERIDO') {
+          statusBadge = '<span class="status-badge badge-conferido">🟢 Conferido</span>';
+          precoValHtml = `<span class="card-price-val">R$ ${val}</span>`;
+        } else if (precoObj.status_conferencia === 'AJUSTADO') {
+          statusBadge = '<span class="status-badge badge-ajustado">🔵 Ajustado</span>';
+          precoValHtml = `<span class="card-price-val">R$ ${val}</span>`;
+        } else {
+          statusBadge = '<span class="status-badge badge-pendente">🟡 Pendente</span>';
+          precoValHtml = `<span class="card-price-val">R$ ${val}</span>`;
+        }
+
+        const dataNfe = precoObj.data_emissao_nfe ? new Date(precoObj.data_emissao_nfe).toLocaleString('pt-BR') : 'Hoje';
+        horaNfeStr = `NFC-e emitida: ${dataNfe}`;
+      }
+    }
+
+    const mediaAnt = prod.media_anterior ? `R$ ${Number(prod.media_anterior).toFixed(2)}` : '—';
+
+    htmlCards += `
+      <div class="product-clean-card">
+        <div class="card-top">
+          <div>
+            <div class="card-item-title">${escapeHtml(prod.item_cesta)}</div>
+            <div class="card-marca-spec">${escapeHtml(prod.marca_especificacao)}</div>
+          </div>
+          <span class="card-code-pill">${escapeHtml(prod.codigo_produto)}</span>
+        </div>
+        <div class="card-category">${escapeHtml(prod.categoria || '')} ${prod.gtin ? `• GTIN: ${prod.gtin}` : ''}</div>
+        <div class="card-price-row">
+          <div>${precoValHtml}</div>
+          <div>${statusBadge}</div>
+        </div>
+        <div class="card-actions">
+          <span>${horaNfeStr}</span>
+          ${precoIdAudit ? `<button type="button" class="btn btn-sm btn-secondary" onclick="abrirModalCritica(${precoIdAudit})">Auditar</button>` : `<span class="text-muted">Média ant: ${mediaAnt}</span>`}
+        </div>
+      </div>
+    `;
+  });
+
+  cardsGridProdutos.innerHTML = htmlCards;
 }
 
 // ==================== 3. MODAL DE CRÍTICA & AUDITORIA ====================
