@@ -310,7 +310,15 @@ app.get('/api/matriz', async (req, res) => {
     const { semana, categoria, mercado, diaSemana, dataColeta, dataNfe } = req.query;
 
     // Mercados com endereço completo
-    let estabSql = 'SELECT id, codigo_planilha, nome, bairro, municipio, cnpj, endereco_completo, semana_coleta, dia_semana, critica FROM estabelecimentos WHERE ativo = TRUE';
+    let estabSql = `
+      SELECT 
+        id, codigo_planilha, nome, bairro, municipio, cnpj, 
+        COALESCE(endereco_completo, endereco, '') AS endereco_completo,
+        COALESCE(endereco, endereco_completo, '') AS endereco,
+        semana_coleta, dia_semana, critica 
+      FROM estabelecimentos 
+      WHERE ativo = TRUE
+    `;
     const estabParams = [];
     if (semana) {
       estabParams.push(Number(semana));
@@ -897,6 +905,12 @@ async function autoInitDatabase() {
         INSERT INTO coletas_lote (id, semana_coleta, status, observacoes)
         VALUES (1, 1, 'CONCLUIDO', 'Lote Inicial Padrão')
         ON CONFLICT (id) DO NOTHING;
+      `);
+      await pool.query(`
+        ALTER TABLE estabelecimentos ADD COLUMN IF NOT EXISTS endereco TEXT;
+      `);
+      await pool.query(`
+        ALTER TABLE estabelecimentos ADD COLUMN IF NOT EXISTS endereco_completo TEXT;
       `);
       console.log('✅ Índice único uq_precos_coleta_estab_prod e tabelas sincronizados.');
     } catch (migErr) {

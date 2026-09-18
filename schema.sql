@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS estabelecimentos (
 );
 
 ALTER TABLE estabelecimentos ADD COLUMN IF NOT EXISTS endereco TEXT;
+ALTER TABLE estabelecimentos ADD COLUMN IF NOT EXISTS endereco_completo TEXT;
 
 CREATE TABLE IF NOT EXISTS produtos_catalogo (
     id SERIAL PRIMARY KEY,
