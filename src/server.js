@@ -1080,11 +1080,37 @@ async function autoInitDatabase() {
 
 // Endpoint para inicialização manual forçada do banco (incluindo V2)
 app.post('/api/setup-db', async (req, res) => {
+  const steps = [];
   try {
-    await autoInitDatabase();
-    res.json({ success: true, message: 'Banco inicializado e migrado para V2 com sucesso' });
+    const v2SchemaPath = path.resolve('database/schema_v2.sql');
+    if (fs.existsSync(v2SchemaPath)) {
+      const v2SchemaSql = fs.readFileSync(v2SchemaPath, 'utf8');
+      await pool.query(v2SchemaSql);
+      steps.push('schema_v2.sql executado');
+    }
+
+    const v2MigratePath = path.resolve('database/migrate_to_v2.sql');
+    if (fs.existsSync(v2MigratePath)) {
+      const v2MigrateSql = fs.readFileSync(v2MigratePath, 'utf8');
+      await pool.query(v2MigrateSql);
+      steps.push('migrate_to_v2.sql executado');
+    }
+
+    const cEstab = await pool.query('SELECT COUNT(*) FROM tb_estabelecimento');
+    const cProd = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese');
+    const cUser = await pool.query('SELECT COUNT(*) FROM tb_usuario');
+
+    res.json({
+      success: true,
+      steps,
+      counts: {
+        tb_estabelecimento: cEstab.rows[0].count,
+        tb_produto_dieese: cProd.rows[0].count,
+        tb_usuario: cUser.rows[0].count
+      }
+    });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message, steps });
   }
 });
 
