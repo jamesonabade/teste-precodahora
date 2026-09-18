@@ -16,8 +16,11 @@ CREATE TABLE IF NOT EXISTS estabelecimentos (
     critica VARCHAR(100),
     ativo BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    endereco TEXT
 );
+
+ALTER TABLE estabelecimentos ADD COLUMN IF NOT EXISTS endereco TEXT;
 
 CREATE TABLE IF NOT EXISTS produtos_catalogo (
     id SERIAL PRIMARY KEY,
