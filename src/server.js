@@ -502,6 +502,17 @@ app.post('/api/coleta/iniciar', async (req, res) => {
     try {
       addLog(`🚀 Coleta iniciada (Rodada: ${rodada}, Modo: ${apenasPendentes ? 'Apenas Pendentes de Hoje' : 'Completa'}, Semana: ${semana || 'Todas'})`);
 
+      // Garantir existência de coletas_lote com id 1
+      try {
+        await pool.query(`
+          INSERT INTO coletas_lote (id, semana_coleta, status, observacoes)
+          VALUES (1, 1, 'EM_ANDAMENTO', 'Lote diário principal')
+          ON CONFLICT (id) DO UPDATE SET status = 'EM_ANDAMENTO', updated_at = NOW();
+        `);
+      } catch (loteErr) {
+        console.warn('Aviso coletas_lote init:', loteErr.message);
+      }
+
       const collector = new PrecoDaHoraCollector({
         municipio: 'vitoria da conquista',
         raioKm: 15,
@@ -865,7 +876,12 @@ async function autoInitDatabase() {
         CREATE UNIQUE INDEX IF NOT EXISTS uq_precos_coleta_estab_prod 
         ON precos_coletados (coleta_id, estabelecimento_id, produto_id);
       `);
-      console.log('✅ Índice único uq_precos_coleta_estab_prod ativo.');
+      await pool.query(`
+        INSERT INTO coletas_lote (id, semana_coleta, status, observacoes)
+        VALUES (1, 1, 'CONCLUIDO', 'Lote Inicial Padrão')
+        ON CONFLICT (id) DO NOTHING;
+      `);
+      console.log('✅ Índice único uq_precos_coleta_estab_prod e coletas_lote ativos.');
     } catch (migErr) {
       console.warn('Aviso migração uq_precos_coleta_estab_prod:', migErr.message);
     }
