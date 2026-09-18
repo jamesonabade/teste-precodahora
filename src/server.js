@@ -988,6 +988,42 @@ app.get('/api/v2/precos-oficiais', async (req, res) => {
   }
 });
 
+// Endpoint para Robô / n8n / Script Python inserir preço bruto em tb_coleta_automatizada
+app.post('/api/v2/coleta-robo', async (req, res) => {
+  try {
+    const { codigo_barras, cnpj, preco_extraido, data_emissao_nfe, link_comprovante_nfe, alerta_outlier, motivo_alerta } = req.body;
+
+    if (!codigo_barras || !cnpj || preco_extraido === undefined) {
+      return res.status(400).json({ success: false, message: 'codigo_barras, cnpj e preco_extraido são obrigatórios.' });
+    }
+
+    const cnpjLimpo = String(cnpj).replace(/\D/g, '');
+    const estRes = await pool.query('SELECT id_estabelecimento FROM tb_estabelecimento WHERE cnpj LIKE $1 LIMIT 1', [`%${cnpjLimpo}%`]);
+    const prodRes = await pool.query('SELECT id_produto FROM tb_produto_dieese WHERE codigo_barras = $1 LIMIT 1', [codigo_barras]);
+
+    if (estRes.rows.length === 0 || prodRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `Estabelecimento (CNPJ ${cnpj}) ou Produto (GTIN ${codigo_barras}) não localizado no cadastro base.`
+      });
+    }
+
+    const idEstab = estRes.rows[0].id_estabelecimento;
+    const idProd = prodRes.rows[0].id_produto;
+
+    const result = await pool.query(`
+      INSERT INTO tb_coleta_automatizada (
+        id_estabelecimento, id_produto, data_hora_extracao, preco_extraido, data_emissao_nfe, link_comprovante_nfe, status_validacao, alerta_outlier, motivo_alerta
+      ) VALUES ($1, $2, NOW(), $3, $4, $5, 'PENDENTE', $6, $7)
+      RETURNING *
+    `, [idEstab, idProd, preco_extraido, data_emissao_nfe || new Date(), link_comprovante_nfe || null, !!alerta_outlier, motivo_alerta || null]);
+
+    res.json({ success: true, message: 'Preço registrado pelo robô com sucesso', data: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Auto-inicialização de schema e catálogo de produtos/mercados
 async function autoInitDatabase() {
   try {
