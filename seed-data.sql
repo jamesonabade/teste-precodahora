@@ -2,7 +2,6 @@
 -- PostgreSQL database dump
 --
 
-\restrict z8qQmXbYXFefx2AzhiToKNE5DQFFJDTYXGSpJsfEefNuLXsqEaq3Ze3lO0WCOtl
 
 -- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
 -- Dumped by pg_dump version 18.4 (Debian 18.4-1.pgdg13+1)
@@ -321,5 +320,4 @@ SELECT pg_catalog.setval('public.produtos_catalogo_id_seq', 152, true);
 -- PostgreSQL database dump complete
 --
 
-\unrestrict z8qQmXbYXFefx2AzhiToKNE5DQFFJDTYXGSpJsfEefNuLXsqEaq3Ze3lO0WCOtl
 
