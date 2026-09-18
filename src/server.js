@@ -5,6 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { pool } from './db.js';
 import { PrecoDaHoraCollector, isCupomValidoDoDia } from './collector.js';
+import { runSpreadsheetImport } from './import-full-spreadsheet.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -236,6 +237,8 @@ app.get('/api/estabelecimentos', async (req, res) => {
       SELECT 
         id_estabelecimento AS id,
         id_estabelecimento,
+        codigo_estabelecimento,
+        codigo_estabelecimento AS codigo_mercado,
         codigo_externo AS codigo_planilha,
         codigo_externo,
         nome,
@@ -262,12 +265,12 @@ app.get('/api/estabelecimentos', async (req, res) => {
 
     if (busca) {
       params.push(`%${busca.toLowerCase()}%`);
-      sql += ` AND (LOWER(nome) LIKE $${params.length} OR LOWER(codigo_externo) LIKE $${params.length} OR LOWER(bairro) LIKE $${params.length} OR cnpj LIKE $${params.length})`;
+      sql += ` AND (LOWER(nome) LIKE $${params.length} OR LOWER(bairro) LIKE $${params.length} OR cnpj LIKE $${params.length} OR LOWER(codigo_estabelecimento) LIKE $${params.length} OR LOWER(codigo_externo) LIKE $${params.length})`;
     }
 
-    sql += ' ORDER BY id_estabelecimento ASC';
+    sql += ` ORDER BY COALESCE(NULLIF(regexp_replace(codigo_estabelecimento, '\\D', '', 'g'), '')::int, id_estabelecimento) ASC, id_estabelecimento ASC`;
     const result = await pool.query(sql, params);
-    res.json({ success: true, count: result.rows.length, data: result.rows });
+    res.json({ success: true, total: result.rows.length, data: result.rows });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1149,16 +1152,145 @@ app.put('/api/v2/configuracao', async (req, res) => {
   }
 });
 
-// ==================== 7. AUTO-INICIALIZAÇÃO & MIGRAÇÃO ====================
+// ==================== 7. CALENDÁRIO DE COLETAS & ESCALA DIEESE ====================
+// Listar calendário com progresso em tempo real
+app.get('/api/v2/calendario', async (req, res) => {
+  try {
+    const { semana, dia_semana, status } = req.query;
+    let sql = `SELECT * FROM vw_calendario_progresso WHERE 1=1`;
+    const params = [];
+
+    if (semana) {
+      params.push(parseInt(semana, 10));
+      sql += ` AND semana = $${params.length}`;
+    }
+    if (dia_semana) {
+      params.push(dia_semana);
+      sql += ` AND dia_semana ILIKE $${params.length}`;
+    }
+    if (status) {
+      params.push(status);
+      sql += ` AND status_tempo_real = $${params.length}`;
+    }
+
+    sql += ` ORDER BY semana ASC, COALESCE(NULLIF(regexp_replace(codigo_estabelecimento, '\\D', '', 'g'), '')::int, id_estabelecimento) ASC`;
+    const result = await pool.query(sql, params);
+
+    const totais = {
+      total_estabelecimentos: result.rows.length,
+      total_esperado: result.rows.reduce((acc, r) => acc + (parseInt(r.total_esperado, 10) || 0), 0),
+      total_registrado: result.rows.reduce((acc, r) => acc + (parseInt(r.qtd_registrada, 10) || 0), 0),
+      total_validado: result.rows.reduce((acc, r) => acc + (parseInt(r.qtd_validada_humano, 10) || 0), 0),
+      total_restante: result.rows.reduce((acc, r) => acc + (parseInt(r.qtd_restante, 10) || 0), 0)
+    };
+
+    res.json({ success: true, data: result.rows, totais });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Atualizar informações da escala no calendário
+app.put('/api/v2/calendario/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data_efetiva, pesquisador, critica_validador, prints_validador, status } = req.body;
+    const result = await pool.query(`
+      UPDATE tb_calendario_coleta
+      SET 
+        data_efetiva = COALESCE($1, data_efetiva),
+        pesquisador = COALESCE($2, pesquisador),
+        critica_validador = COALESCE($3, critica_validador),
+        prints_validador = COALESCE($4, prints_validador),
+        status = COALESCE($5, status),
+        updated_at = NOW()
+      WHERE id_calendario = $6
+      RETURNING *
+    `, [data_efetiva, pesquisador, critica_validador, prints_validador, status, id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Agendamento não encontrado.' });
+    }
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==================== 8. RESUMOS, TOTAIS E MÉDIAS (EQUIVALENTE À ABA DIEESE) ====================
+app.get('/api/v2/resumos-medias', async (req, res) => {
+  try {
+    const { categoria, busca, apenas_alertas, matriz } = req.query;
+    let sql = `SELECT * FROM vw_resumo_totais_medias WHERE 1=1`;
+    const params = [];
+
+    if (categoria) {
+      params.push(categoria);
+      sql += ` AND categoria = $${params.length}`;
+    }
+    if (busca) {
+      params.push(`%${busca.toLowerCase()}%`);
+      sql += ` AND (LOWER(descricao_item) LIKE $${params.length} OR LOWER(codigo_dieese) LIKE $${params.length} OR codigo_barras LIKE $${params.length})`;
+    }
+    if (apenas_alertas === 'true') {
+      sql += ` AND alerta_outlier_50pct = TRUE`;
+    }
+
+    sql += ` ORDER BY categoria ASC, codigo_dieese ASC, id_produto ASC`;
+    const result = await pool.query(sql, params);
+
+    // Se solicitado matriz completa por mercado M1..M40
+    if (matriz === 'true') {
+      const precosMercados = await pool.query(`
+        SELECT 
+          c.id_produto,
+          e.codigo_estabelecimento,
+          c.preco_extraido
+        FROM tb_coleta_automatizada c
+        JOIN tb_estabelecimento e ON e.id_estabelecimento = c.id_estabelecimento
+        WHERE c.preco_extraido IS NOT NULL
+      `);
+
+      const mapaPrecos = {};
+      for (const row of precosMercados.rows) {
+        if (!mapaPrecos[row.id_produto]) mapaPrecos[row.id_produto] = {};
+        mapaPrecos[row.id_produto][row.codigo_estabelecimento] = row.preco_extraido;
+      }
+
+      const dadosComMatriz = result.rows.map(item => ({
+        ...item,
+        precos_por_mercado: mapaPrecos[item.id_produto] || {}
+      }));
+
+      return res.json({ success: true, total: dadosComMatriz.length, data: dadosComMatriz });
+    }
+
+    res.json({ success: true, total: result.rows.length, data: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Forçar importação integral da planilha oficial
+app.post('/api/v2/importar-planilha', async (req, res) => {
+  try {
+    await runSpreadsheetImport();
+    res.json({ success: true, message: 'Planilha oficial importada e sincronizada com sucesso.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==================== 9. AUTO-INICIALIZAÇÃO & MIGRAÇÃO ====================
 async function autoInitDatabase() {
   try {
-    console.log('⚙️ Inicializando tabelas V2 e aplicando dicionário de dados...');
+    console.log('⚙️ Inicializando tabelas V2/V3 e aplicando dicionário de dados...');
 
     const v2SchemaPath = path.resolve('database/schema_v2.sql');
     if (fs.existsSync(v2SchemaPath)) {
       const v2SchemaSql = fs.readFileSync(v2SchemaPath, 'utf8');
       await pool.query(v2SchemaSql);
-      console.log('✅ Schema V2 (tb_* e dicionário) conferido com sucesso.');
+      console.log('✅ Schema V2 conferido com sucesso.');
     }
 
     const cleanupPath = path.resolve('database/cleanup_legacy_tables.sql');
@@ -1166,6 +1298,22 @@ async function autoInitDatabase() {
       const cleanupSql = fs.readFileSync(cleanupPath, 'utf8');
       await pool.query(cleanupSql);
       console.log('🧹 Limpeza definitiva de tabelas legadas executada com sucesso.');
+    }
+
+    const v3SchemaPath = path.resolve('database/schema_v3.sql');
+    if (fs.existsSync(v3SchemaPath)) {
+      const v3SchemaSql = fs.readFileSync(v3SchemaPath, 'utf8');
+      await pool.query(v3SchemaSql);
+      console.log('✅ Schema V3 (Calendário e Médias) conferido com sucesso.');
+    }
+
+    // Verificar se o calendário ou produtos oficiais precisam ser carregados da planilha
+    const checkCal = await pool.query('SELECT COUNT(*) FROM tb_calendario_coleta');
+    const checkProd = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese WHERE status_ativo = TRUE');
+    if (parseInt(checkCal.rows[0].count, 10) === 0 || parseInt(checkProd.rows[0].count, 10) !== 76) {
+      console.log('📋 Sincronizando catálogo e calendário com a planilha oficial...');
+      await runSpreadsheetImport();
+      console.log('✅ Carga da planilha concluída na inicialização.');
     }
   } catch (err) {
     console.error('⚠️ Aviso durante auto-inicialização do banco:', err.message);
@@ -1176,21 +1324,27 @@ async function autoInitDatabase() {
 app.post('/api/setup-db', async (req, res) => {
   try {
     await autoInitDatabase();
+    await runSpreadsheetImport();
+
     const cEstab = await pool.query('SELECT COUNT(*) FROM tb_estabelecimento');
-    const cProd = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese');
+    const cProd = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese WHERE status_ativo = TRUE');
     const cColeta = await pool.query('SELECT COUNT(*) FROM tb_coleta_automatizada');
     const cVal = await pool.query('SELECT COUNT(*) FROM tb_validacao_critica');
     const cConf = await pool.query('SELECT COUNT(*) FROM tb_configuracao_automacao');
+    const cCal = await pool.query('SELECT COUNT(*) FROM tb_calendario_coleta');
+    const cRef = await pool.query('SELECT COUNT(*) FROM tb_media_referencia_dieese');
 
     res.json({
       success: true,
-      message: 'Banco 100% atualizado para Schema V2 e tabelas legadas removidas com sucesso.',
+      message: 'Banco 100% atualizado para Schema V3 com 76 produtos oficiais e calendário sincronizado.',
       counts: {
         tb_estabelecimento: cEstab.rows[0].count,
         tb_produto_dieese: cProd.rows[0].count,
         tb_coleta_automatizada: cColeta.rows[0].count,
         tb_validacao_critica: cVal.rows[0].count,
-        tb_configuracao_automacao: cConf.rows[0].count
+        tb_configuracao_automacao: cConf.rows[0].count,
+        tb_calendario_coleta: cCal.rows[0].count,
+        tb_media_referencia_dieese: cRef.rows[0].count
       }
     });
   } catch (err) {
