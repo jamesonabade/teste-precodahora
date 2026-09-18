@@ -177,6 +177,12 @@
         <input type="text" id="buscaTexto" placeholder="Ex: Açúcar, Café, Leite, GTIN...">
       </div>
 
+      <div class="filter-group filter-checkbox" style="display: flex; align-items: flex-end; padding-bottom: 0.5rem;">
+        <label style="cursor: pointer; display: flex; align-items: center; gap: 0.4rem; font-weight: 600; font-size: 0.85rem; color: #1e293b;">
+          <input type="checkbox" id="checkApenasHoje" style="width: 16px; height: 16px; cursor: pointer;">
+          <span>📅 Cupons de Hoje (05h-21h)</span>
+        </label>
+      </div>
       <div class="filter-group filter-actions">
         <button type="button" id="btnLimparFiltros" class="btn btn-secondary" title="Limpar todos os filtros aplicados">Limpar Filtros</button>
       </div>
@@ -266,11 +272,14 @@
           <p class="subtitle">Acompanhe todos os lotes de consulta executados, duração e taxas de cobertura do dia</p>
         </div>
         <div class="logs-actions-btns">
-          <button id="btnDispararColetaAbaLogs" class="btn btn-primary">
-            ▶ Iniciar Nova Coleta
+          <button id="btnDispararColetaAbaLogs" class="btn btn-primary" title="Iniciar varredura completa">
+            ▶ Iniciar Varredura Geral
+          </button>
+          <button id="btnReTentarPendentes" class="btn btn-warning" title="Re-tentar apenas produtos que ainda não tiveram venda emitida hoje entre 05h e 21h">
+            🔄 Re-tentar Pendentes de Hoje
           </button>
           <button id="btnTestarNtfy" class="btn btn-secondary" title="Disparar notificação de teste no ntfy.sh/pdh-auto2026">
-            📱 Testar Notificação ntfy
+            📱 Testar ntfy
           </button>
           <button id="btnRecarregarLogs" class="btn btn-secondary">
             🔄 Atualizar

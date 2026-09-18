@@ -3,6 +3,43 @@ import { pool } from './db.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Valida se o cupom fiscal foi emitido no dia de referência (hoje)
+ * e estritamente dentro da janela: das 05:00 da manhã até as 21:00 da noite.
+ * SEFAZ armazena até 72h; notas de dias anteriores são rejeitadas para a coleta do dia.
+ */
+export function isCupomValidoDoDia(dataNfeString, dataReferencia = new Date()) {
+  if (!dataNfeString) return false;
+  const dataNfe = new Date(dataNfeString);
+  if (isNaN(dataNfe.getTime())) return false;
+
+  const options = { timeZone: 'America/Bahia', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false };
+  const nfeParts = new Intl.DateTimeFormat('pt-BR', options).formatToParts(dataNfe);
+  const refParts = new Intl.DateTimeFormat('pt-BR', options).formatToParts(dataReferencia);
+
+  const getPart = (parts, type) => parts.find(p => p.type === type)?.value;
+
+  const nfeDay = getPart(nfeParts, 'day');
+  const nfeMonth = getPart(nfeParts, 'month');
+  const nfeYear = getPart(nfeParts, 'year');
+  const nfeHour = parseInt(getPart(nfeParts, 'hour'), 10);
+  const nfeMinute = parseInt(getPart(nfeParts, 'minute'), 10);
+
+  const refDay = getPart(refParts, 'day');
+  const refMonth = getPart(refParts, 'month');
+  const refYear = getPart(refParts, 'year');
+
+  if (nfeDay !== refDay || nfeMonth !== refMonth || nfeYear !== refYear) {
+    return false;
+  }
+
+  // Janela: das 05:00 até 21:00 (inclusive)
+  if (nfeHour < 5) return false;
+  if (nfeHour > 21 || (nfeHour === 21 && nfeMinute > 0)) return false;
+
+  return true;
+}
+
 export class PrecoDaHoraCollector {
   constructor(options = {}) {
     this.options = {
@@ -31,6 +68,14 @@ export class PrecoDaHoraCollector {
   async esperarIntervaloSeguro() {
     const delay = Math.floor(Math.random() * (this.maxDelayMs - this.minDelayMs + 1)) + this.minDelayMs;
     await sleep(delay);
+  }
+
+  /**
+   * Valida se a nota fiscal foi emitida no dia de referência (hoje)
+   * e estritamente dentro da janela: das 05:00 da manhã até as 21:00 da noite.
+   */
+  validarCupomDoDia(dataNfeString, dataReferencia = new Date()) {
+    return isCupomValidoDoDia(dataNfeString, dataReferencia);
   }
 
   /**

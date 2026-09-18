@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { pool } from './db.js';
-import { PrecoDaHoraCollector } from './collector.js';
+import { PrecoDaHoraCollector, isCupomValidoDoDia } from './collector.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -481,7 +481,7 @@ app.post('/api/coleta/iniciar', async (req, res) => {
     return res.status(400).json({ success: false, message: 'Uma coleta já está em andamento.' });
   }
 
-  const { semana, limite, categoria, minDelayMs = 2500, maxDelayMs = 4000 } = req.body;
+  const { semana, limite, categoria, apenasPendentes = false, rodada = 1, minDelayMs = 2500, maxDelayMs = 4000 } = req.body;
 
   coletaAtiva = {
     emExecucao: true,
@@ -489,15 +489,18 @@ app.post('/api/coleta/iniciar', async (req, res) => {
     progresso: 0,
     total: 0,
     atual: 0,
-    itemAtual: 'Iniciando pipeline resiliente...',
+    itemAtual: 'Iniciando pipeline resiliente do dia (05h às 21h)...',
     logs: []
   };
 
-  res.json({ success: true, message: 'Coleta iniciada com sucesso em background!' });
+  res.json({ 
+    success: true, 
+    message: `Coleta (Rodada ${rodada}) iniciada em background! ${apenasPendentes ? 'Modo: apenas itens pendentes de hoje.' : 'Modo: varredura completa.'}` 
+  });
 
   (async () => {
     try {
-      addLog(`🚀 Coleta iniciada via Web (Semana: ${semana || 'Todas'}, Limite: ${limite || 'Sem limite'})`);
+      addLog(`🚀 Coleta iniciada (Rodada: ${rodada}, Modo: ${apenasPendentes ? 'Apenas Pendentes de Hoje' : 'Completa'}, Semana: ${semana || 'Todas'})`);
 
       const collector = new PrecoDaHoraCollector({
         municipio: 'vitoria da conquista',
@@ -515,14 +518,32 @@ app.post('/api/coleta/iniciar', async (req, res) => {
       }
       const estabelecimentos = (await pool.query(estabSql, estabParams)).rows;
 
-      // Produtos
-      let prodSql = 'SELECT id, codigo_produto, categoria, item_cesta, marca_especificacao, gtin, tipo_busca, termo_busca, regra_calculo FROM produtos_catalogo WHERE ativo = TRUE';
+      // Produtos: se apenasPendentes = true, busca só quem NÃO tem nota válida de hoje entre 05h e 21h
+      let prodSql = `
+        SELECT p.id, p.codigo_produto, p.categoria, p.item_cesta, p.marca_especificacao, p.gtin, p.tipo_busca, p.termo_busca, p.regra_calculo 
+        FROM produtos_catalogo p
+        WHERE p.ativo = TRUE
+      `;
       const prodParams = [];
+
+      if (apenasPendentes) {
+        prodSql += `
+          AND p.id NOT IN (
+            SELECT DISTINCT produto_id 
+            FROM precos_coletados 
+            WHERE DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
+            AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
+            AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
+            AND preco_final_coletado IS NOT NULL
+          )
+        `;
+      }
+
       if (categoria) {
         prodParams.push(categoria);
-        prodSql += ` AND categoria = $${prodParams.length}`;
+        prodSql += ` AND p.categoria = $${prodParams.length}`;
       }
-      prodSql += ' ORDER BY codigo_produto ASC, id ASC';
+      prodSql += ' ORDER BY p.codigo_produto ASC, p.id ASC';
       if (limite) {
         prodParams.push(Number(limite));
         prodSql += ` LIMIT $${prodParams.length}`;
@@ -530,11 +551,28 @@ app.post('/api/coleta/iniciar', async (req, res) => {
       const produtos = (await pool.query(prodSql, prodParams)).rows;
 
       coletaAtiva.total = produtos.length;
-      addLog(`📋 ${produtos.length} produtos e ${estabelecimentos.length} mercados selecionados.`);
+      addLog(`📋 ${produtos.length} produtos e ${estabelecimentos.length} mercados selecionados para a rodada ${rodada}.`);
+
+      // 1. Notificação push de INÍCIO da coleta via ntfy
+      try {
+        await fetch('https://ntfy.sh/pdh-auto2026', {
+          method: 'POST',
+          headers: {
+            'Title': `DIEESE - Coleta Diária Iniciada (Rodada ${rodada})`,
+            'Priority': 'default',
+            'Tags': 'hourglass_flowing_sand,shopping_cart'
+          },
+          body: `🚀 Coleta DIEESE iniciada às ${new Date().toLocaleTimeString('pt-BR')}!\n🎯 Regra: Cupons emitidos HOJE entre 05:00 e 21:00\n📦 Produtos nesta rodada: ${produtos.length}\n🏪 Mercados ativos: ${estabelecimentos.length}\n${apenasPendentes ? '🔄 Foco: Apenas itens ainda sem venda hoje.' : '📋 Foco: Varredura geral.'}`
+        });
+        addLog('📱 Notificação de início disparada para ntfy.sh/pdh-auto2026');
+      } catch (ntfyInitErr) {
+        console.warn('Aviso ntfy início:', ntfyInitErr.message);
+      }
 
       const inicioTimestamp = Date.now();
       let totalEncontrados = 0;
       let totalNaoEncontrados = 0;
+      let totalDescartadosForaJanela = 0;
 
       for (let i = 0; i < produtos.length; i++) {
         const prod = produtos[i];
@@ -559,6 +597,15 @@ app.post('/api/coleta/iniciar', async (req, res) => {
         const mercadosComOferta = new Set();
 
         for (const oferta of ofertas) {
+          // Validação estrita da data de emissão: DEVE ser de hoje entre 05:00 e 21:00
+          const dataNfeRaw = oferta.produto?.data;
+          const ehDoDiaValido = isCupomValidoDoDia(dataNfeRaw);
+
+          if (!ehDoDiaValido) {
+            totalDescartadosForaJanela++;
+            continue;
+          }
+
           const estOferta = oferta.estabelecimento;
           const cnpjOferta = estOferta?.cnpj ? String(estOferta.cnpj).replace(/\D/g, '') : '';
           const nomeOferta = String(estOferta?.nomeEstabelecimento || '').toUpperCase();
@@ -586,13 +633,12 @@ app.post('/api/coleta/iniciar', async (req, res) => {
               oferta,
               regraCalculo: prod.regra_calculo
             });
-            totalPersistidos++;
             totalEncontrados++;
-            addLog(`   🎯 Salvo: ${matchedEstab.codigo_planilha} (${matchedEstab.nome}) - R$ ${oferta.produto.precoBruto ?? oferta.produto.precoUnitario}`);
+            addLog(`   🎯 Salvo (Hoje): ${matchedEstab.codigo_planilha} (${matchedEstab.nome}) - R$ ${oferta.produto.precoBruto ?? oferta.produto.precoUnitario}`);
           }
         }
 
-        // Para os estabelecimentos que não tiveram oferta desse produto, registrar NAO_ENCONTRADO
+        // Para estabelecimentos sem oferta emitida hoje, registrar NAO_ENCONTRADO para re-tentativa
         for (const estab of estabelecimentos) {
           if (!mercadosComOferta.has(estab.id)) {
             totalNaoEncontrados++;
@@ -609,12 +655,12 @@ app.post('/api/coleta/iniciar', async (req, res) => {
         }
 
         if (mercadosComOferta.size === 0) {
-          addLog(`   ✕ Nenhuma venda recente encontrada para ${prod.marca_especificacao} nos mercados selecionados.`);
+          addLog(`   ✕ Nenhuma venda registrada HOJE (05h às 21h) para ${prod.marca_especificacao}. Aguardando próxima rodada.`);
         }
       }
 
       const duracaoSegundos = Number(((Date.now() - inicioTimestamp) / 1000).toFixed(1));
-      const resumoMsg = `Lote finalizado com ${totalEncontrados} ofertas encontradas e ${totalNaoEncontrados} não encontradas em ${duracaoSegundos}s.`;
+      const resumoMsg = `Rodada ${rodada} finalizada com ${totalEncontrados} preços válidos de hoje e ${totalNaoEncontrados} não encontrados (ou sem venda no dia) em ${duracaoSegundos}s.`;
       addLog(`🏁 ${resumoMsg}`);
 
       // Persistir em historico_execucoes
@@ -637,20 +683,58 @@ app.post('/api/coleta/iniciar', async (req, res) => {
         console.error('Erro ao salvar historico_execucoes:', dbLogErr);
       }
 
-      // Notificação push automática via ntfy
+      // 2. Consulta detalhada de itens que permanecem NÃO concluídos no dia
+      let pendentesHoje = [];
       try {
+        const pendRes = await pool.query(`
+          SELECT pc.codigo_produto, pc.item_cesta, pc.marca_especificacao
+          FROM produtos_catalogo pc
+          WHERE pc.ativo = TRUE
+          AND pc.id NOT IN (
+            SELECT DISTINCT produto_id 
+            FROM precos_coletados 
+            WHERE DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
+            AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
+            AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
+            AND preco_final_coletado IS NOT NULL
+          )
+          ORDER BY pc.codigo_produto ASC
+        `);
+        pendentesHoje = pendRes.rows;
+      } catch (pendErr) {
+        console.error('Erro ao consultar pendências do dia:', pendErr);
+      }
+
+      // 3. Notificação de CONCLUSÃO / FECHAMENTO via ntfy
+      try {
+        let relatorioCorpo = `✅ Rodada ${rodada} finalizada em ${duracaoSegundos}s!\n🎯 Preços com nota de hoje: ${totalEncontrados}\n`;
+
+        if (pendentesHoje.length > 0) {
+          relatorioCorpo += `\n⚠️ ITENS NÃO CONCLUÍDOS NO DIA (${pendentesHoje.length} sem nota fiscal entre 05h e 21h):\n`;
+          relatorioCorpo += pendentesHoje.slice(0, 15).map(p => `• [${p.codigo_produto}] ${p.item_cesta} (${p.marca_especificacao})`).join('\n');
+          if (pendentesHoje.length > 15) {
+            relatorioCorpo += `\n... e mais ${pendentesHoje.length - 15} itens pendentes.`;
+          }
+        } else {
+          relatorioCorpo += '\n🎉 TODOS OS PRODUTOS FORAM CONCLUÍDOS COM NOTAS DE HOJE!';
+        }
+
+        relatorioCorpo += '\n🔗 Painel: https://precodahora.dmi89h.easypanel.host/';
+
+        const ehFechamento = rodada === 'fechamento' || rodada === 4 || rodada === '4';
+
         await fetch('https://ntfy.sh/pdh-auto2026', {
           method: 'POST',
           headers: {
-            'Title': 'Preço da Hora DIEESE - Coleta Finalizada',
-            'Priority': 'default',
-            'Tags': 'white_check_mark,bar_chart'
+            'Title': ehFechamento ? 'DIEESE - Fechamento Diário de Preços' : `DIEESE - Relatório da Rodada ${rodada}`,
+            'Priority': ehFechamento ? 'high' : 'default',
+            'Tags': ehFechamento ? 'warning,bar_chart' : 'white_check_mark,bar_chart'
           },
-          body: `✅ Coleta DIEESE finalizada!\n📊 Buscas: ${produtos.length} produtos em ${estabelecimentos.length} mercados\n🎯 Preços coletados: ${totalEncontrados}\n✕ Não encontrados (72h): ${totalNaoEncontrados}\n⏱️ Duração: ${duracaoSegundos}s\n🔗 Acessar painel: http://localhost:3000`
+          body: relatorioCorpo
         });
-        addLog('📱 Notificação push enviada para ntfy.sh/pdh-auto2026');
+        addLog('📱 Relatório de conclusão e pendências enviado para ntfy.sh/pdh-auto2026');
       } catch (ntfyErr) {
-        console.warn('Aviso ntfy:', ntfyErr.message);
+        console.warn('Aviso ntfy final:', ntfyErr.message);
       }
     } catch (error) {
       addLog(`❌ Falha crítica na coleta: ${error.message}`);
@@ -664,6 +748,55 @@ app.post('/api/coleta/iniciar', async (req, res) => {
 // Status do Progresso da Coleta
 app.get('/api/coleta/progresso', (req, res) => {
   res.json({ success: true, data: coletaAtiva });
+});
+
+// Relatório consolidado de cobertura do dia (05h às 21h)
+app.get('/api/relatorio-diario', async (req, res) => {
+  try {
+    const totalProdRes = await pool.query('SELECT COUNT(*) FROM produtos_catalogo WHERE ativo = TRUE');
+    const totalProdutos = Number(totalProdRes.rows[0].count);
+
+    const pendRes = await pool.query(`
+      SELECT pc.id, pc.codigo_produto, pc.categoria, pc.item_cesta, pc.marca_especificacao
+      FROM produtos_catalogo pc
+      WHERE pc.ativo = TRUE
+      AND pc.id NOT IN (
+        SELECT DISTINCT produto_id 
+        FROM precos_coletados 
+        WHERE DATE(data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
+        AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
+        AND EXTRACT(HOUR FROM data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
+        AND preco_final_coletado IS NOT NULL
+      )
+      ORDER BY pc.codigo_produto ASC
+    `);
+
+    const concluidosRes = await pool.query(`
+      SELECT DISTINCT pc.id, pc.codigo_produto, pc.item_cesta, pc.marca_especificacao
+      FROM produtos_catalogo pc
+      JOIN precos_coletados pr ON pr.produto_id = pc.id
+      WHERE pc.ativo = TRUE
+      AND DATE(pr.data_emissao_nfe AT TIME ZONE 'America/Bahia') = CURRENT_DATE
+      AND EXTRACT(HOUR FROM pr.data_emissao_nfe AT TIME ZONE 'America/Bahia') >= 5
+      AND EXTRACT(HOUR FROM pr.data_emissao_nfe AT TIME ZONE 'America/Bahia') <= 21
+      AND pr.preco_final_coletado IS NOT NULL
+      ORDER BY pc.codigo_produto ASC
+    `);
+
+    res.json({
+      success: true,
+      data: {
+        total_produtos: totalProdutos,
+        total_concluidos_hoje: concluidosRes.rows.length,
+        total_pendentes_hoje: pendRes.rows.length,
+        percentual_cobertura_hoje: totalProdutos > 0 ? Number(((concluidosRes.rows.length / totalProdutos) * 100).toFixed(1)) : 0,
+        pendentes_hoje: pendRes.rows,
+        concluidos_hoje: concluidosRes.rows
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ==================== 8. HISTÓRICO & LOGS DE EXECUÇÕES ====================

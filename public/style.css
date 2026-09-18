@@ -1053,3 +1053,126 @@ tbody .col-media-ant { left: 550px; background: #f8fafc; font-weight: 600; text-
   gap: 0.75rem;
   flex-wrap: wrap;
 }
+
+/* ==================== RESPONSIVIDADE MULTI-DISPOSITIVOS ==================== */
+@media (max-width: 1024px) {
+  .header-container {
+    padding: 0.5rem 0;
+  }
+  .kpi-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .filters-bar {
+    gap: 0.6rem;
+  }
+  .modal-card {
+    max-width: 90vw;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0.75rem 1rem 0;
+  }
+  .header-container {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .brand h1 {
+    font-size: 1.1rem;
+  }
+  .nav-tabs {
+    width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    padding-bottom: 0.25rem;
+    gap: 0.5rem;
+    -webkit-overflow-scrolling: touch;
+  }
+  .nav-tab {
+    padding: 0.5rem 0.85rem;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+  }
+  
+  .kpis-section, .filters-section, .logs-header-section, .matrix-container, .crud-container {
+    padding: 0 0.75rem;
+  }
+  
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.6rem;
+  }
+  .kpi-card {
+    padding: 0.85rem;
+  }
+  .kpi-value {
+    font-size: 1.4rem;
+  }
+  
+  .filters-bar {
+    padding: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .filter-group {
+    width: 100%;
+    min-width: 0;
+  }
+  .filter-group select, .filter-group input {
+    width: 100%;
+  }
+  .filter-actions {
+    width: 100%;
+  }
+  .filter-actions button {
+    width: 100%;
+  }
+  
+  .business-rules-banner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+    padding: 0.75rem;
+  }
+  
+  .modal-card {
+    width: 95vw;
+    max-height: 92vh;
+    padding: 1.25rem;
+  }
+  .modal-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+  .modal-actions {
+    flex-direction: column;
+  }
+  .modal-actions button {
+    width: 100%;
+  }
+
+  .logs-actions-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 1rem;
+  }
+  .logs-actions-btns {
+    width: 100%;
+    flex-direction: column;
+  }
+  .logs-actions-btns button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
+  .brand-badge {
+    display: none;
+  }
+}

@@ -126,6 +126,10 @@ function setupEventListeners() {
   filtroCategoria.addEventListener('change', () => renderizarTabela());
   filtroStatusConferencia.addEventListener('change', () => renderizarTabela());
   buscaTexto.addEventListener('input', () => renderizarTabela());
+
+  const checkApenasHoje = document.getElementById('checkApenasHoje');
+  if (checkApenasHoje) checkApenasHoje.addEventListener('change', () => renderizarTabela());
+
   if (btnLimparFiltros) btnLimparFiltros.addEventListener('click', limparTodosFiltros);
 
   // Ações da Aba de Logs
@@ -137,6 +141,31 @@ function setupEventListeners() {
     abrirModal(modalColeta);
     verificarProgressoColeta();
   });
+
+  const btnReTentarPendentes = document.getElementById('btnReTentarPendentes');
+  if (btnReTentarPendentes) {
+    btnReTentarPendentes.addEventListener('click', async () => {
+      if (!confirm('Deseja iniciar a re-tentativa imediata para todos os produtos que ainda NÃO registraram venda hoje (entre 05:00 e 21:00)?')) return;
+      try {
+        mostrarToast('🔄 Disparando re-tentativa de itens pendentes de hoje...');
+        const res = await fetch('/api/coleta/iniciar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apenasPendentes: true, rodada: 'Re-tentativa Pendentes' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          mostrarToast(data.message || 'Re-tentativa em andamento!');
+          abrirModal(modalColeta);
+          verificarProgressoColeta();
+        } else {
+          mostrarToast(data.message || 'Erro ao iniciar', 'error');
+        }
+      } catch (err) {
+        mostrarToast('Erro ao iniciar: ' + err.message, 'error');
+      }
+    });
+  }
 
   const btnTestarNtfy = document.getElementById('btnTestarNtfy');
   if (btnTestarNtfy) btnTestarNtfy.addEventListener('click', testarNotificacaoNtfy);
@@ -183,6 +212,19 @@ function fecharModal(modal) {
     return;
   }
   modal.classList.add('hidden');
+}
+
+// Verifica se a nota fiscal foi emitida HOJE entre 05:00 e 21:00
+function isNfeValidaHoje(dataStr) {
+  if (!dataStr) return false;
+  const d = new Date(dataStr);
+  if (isNaN(d.getTime())) return false;
+  const hoje = new Date();
+  const mesmoDia = d.getDate() === hoje.getDate() && 
+                   d.getMonth() === hoje.getMonth() && 
+                   d.getFullYear() === hoje.getFullYear();
+  const hora = d.getHours();
+  return mesmoDia && hora >= 5 && hora <= 21;
 }
 
 // ==================== 1. STATUS & KPIS ====================
@@ -394,6 +436,15 @@ function renderizarTabela() {
 
       if (!precoObj) {
         return `<td class="cell-empty" title="Ainda não pesquisado neste mercado">—</td>`;
+      }
+
+      const apenasHojeAtivo = document.getElementById('checkApenasHoje')?.checked;
+      if (apenasHojeAtivo) {
+        const emitidoHoje = isNfeValidaHoje(precoObj.data_emissao_nfe);
+        if (!emitidoHoje) {
+          const tooltipAguardando = `⏳ Aguardando Venda de Hoje\n• Estabelecimento: ${est.codigo_planilha} - ${est.nome}\n• Nenhuma nota registrada hoje entre 05:00 e 21:00.\n• Programado para a próxima rodada de re-tentativa.`;
+          return `<td class="cell-empty" style="cursor: help; color: #94a3b8;" title="${escapeHtml(tooltipAguardando)}">⏳</td>`;
+        }
       }
 
       if (precoObj.status_conferencia === 'NAO_ENCONTRADO' || !precoObj.preco_final_coletado || Number(precoObj.preco_final_coletado) <= 0) {
