@@ -1078,40 +1078,163 @@ async function autoInitDatabase() {
   }
 }
 
-// Endpoint para inicialização manual forçada do banco (incluindo V2)
-app.post('/api/setup-db', async (req, res) => {
-  const steps = [];
+// Endpoint de diagnóstico passo a passo da migração
+app.get('/api/debug-migration', async (req, res) => {
+  const results = {};
+  
+  // 0. Drop unique constraints se existirem
   try {
-    const v2SchemaPath = path.resolve('database/schema_v2.sql');
-    if (fs.existsSync(v2SchemaPath)) {
-      const v2SchemaSql = fs.readFileSync(v2SchemaPath, 'utf8');
-      await pool.query(v2SchemaSql);
-      steps.push('schema_v2.sql executado');
-    }
-
-    const v2MigratePath = path.resolve('database/migrate_to_v2.sql');
-    if (fs.existsSync(v2MigratePath)) {
-      const v2MigrateSql = fs.readFileSync(v2MigratePath, 'utf8');
-      await pool.query(v2MigrateSql);
-      steps.push('migrate_to_v2.sql executado');
-    }
-
-    const cEstab = await pool.query('SELECT COUNT(*) FROM tb_estabelecimento');
-    const cProd = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese');
-    const cUser = await pool.query('SELECT COUNT(*) FROM tb_usuario');
-
-    res.json({
-      success: true,
-      steps,
-      counts: {
-        tb_estabelecimento: cEstab.rows[0].count,
-        tb_produto_dieese: cProd.rows[0].count,
-        tb_usuario: cUser.rows[0].count
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message, steps });
+    await pool.query('ALTER TABLE tb_produto_dieese DROP CONSTRAINT IF EXISTS tb_produto_dieese_codigo_dieese_key;');
+    await pool.query('ALTER TABLE tb_estabelecimento DROP CONSTRAINT IF EXISTS tb_estabelecimento_codigo_externo_key;');
+    results.drop_constraints = 'OK';
+  } catch (e) {
+    results.drop_constraints = e.message;
   }
+
+  // 1. Teste Estabelecimentos
+  try {
+    const q1 = await pool.query(`
+      INSERT INTO tb_estabelecimento (
+        id_estabelecimento, codigo_externo, nome, cnpj, bairro, municipio, uf, endereco, lat_long, status_ativo, created_at
+      )
+      SELECT 
+        e.id,
+        e.codigo_planilha,
+        e.nome,
+        e.cnpj,
+        e.bairro,
+        COALESCE(e.municipio, 'Vitória da Conquista'),
+        COALESCE(e.uf, 'BA'),
+        COALESCE(e.endereco_completo, e.endereco, ''),
+        CASE 
+          WHEN e.latitude IS NOT NULL AND e.longitude IS NOT NULL THEN CONCAT(e.latitude, ',', e.longitude)
+          ELSE NULL 
+        END,
+        COALESCE(e.ativo, TRUE),
+        COALESCE(e.created_at, NOW())
+      FROM estabelecimentos e
+      ON CONFLICT (id_estabelecimento) DO UPDATE SET
+        codigo_externo = EXCLUDED.codigo_externo,
+        nome = EXCLUDED.nome,
+        cnpj = COALESCE(EXCLUDED.cnpj, tb_estabelecimento.cnpj),
+        bairro = EXCLUDED.bairro,
+        endereco = COALESCE(EXCLUDED.endereco, tb_estabelecimento.endereco),
+        lat_long = COALESCE(EXCLUDED.lat_long, tb_estabelecimento.lat_long),
+        status_ativo = EXCLUDED.status_ativo
+      RETURNING id_estabelecimento;
+    `);
+    results.estabelecimentos = `Migrados ${q1.rows.length} mercados`;
+  } catch (e) {
+    results.estabelecimentos_error = e.message;
+  }
+
+  // 2. Teste Produtos
+  try {
+    const q2 = await pool.query(`
+      INSERT INTO tb_produto_dieese (
+        id_produto, codigo_dieese, descricao_item, codigo_barras, volume_peso, unidade_medida, categoria, regra_calculo, status_ativo, created_at
+      )
+      SELECT 
+        p.id,
+        p.codigo_produto,
+        COALESCE(p.marca_especificacao, p.item_cesta, p.codigo_produto),
+        p.gtin,
+        NULL,
+        COALESCE(p.unidade_medida, 'UN'),
+        p.categoria,
+        COALESCE(p.regra_calculo, 'PADRAO'),
+        COALESCE(p.ativo, TRUE),
+        COALESCE(p.created_at, NOW())
+      FROM produtos_catalogo p
+      ON CONFLICT (id_produto) DO UPDATE SET
+        codigo_dieese = EXCLUDED.codigo_dieese,
+        descricao_item = EXCLUDED.descricao_item,
+        codigo_barras = COALESCE(EXCLUDED.codigo_barras, tb_produto_dieese.codigo_barras),
+        unidade_medida = EXCLUDED.unidade_medida,
+        categoria = EXCLUDED.categoria,
+        regra_calculo = EXCLUDED.regra_calculo,
+        status_ativo = EXCLUDED.status_ativo
+      RETURNING id_produto;
+    `);
+    results.produtos = `Migrados ${q2.rows.length} produtos`;
+  } catch (e) {
+    results.produtos_error = e.message;
+  }
+
+  // 3. Teste Usuários
+  try {
+    const q3 = await pool.query(`
+      INSERT INTO tb_usuario (id_usuario, nome, email, papel, status_ativo)
+      VALUES 
+        (1, 'Sistema_Automacao', 'bot@precodahora.ba.gov.br', 'BOT', TRUE),
+        (2, 'Mateus_Validador', 'mateus@dieese.org.br', 'VALIDADOR', TRUE),
+        (3, 'Mecia_Validador', 'mecia@dieese.org.br', 'VALIDADOR', TRUE),
+        (4, 'Admin_DIEESE', 'admin@dieese.org.br', 'ADMIN', TRUE)
+      ON CONFLICT (id_usuario) DO UPDATE SET
+        nome = EXCLUDED.nome,
+        papel = EXCLUDED.papel,
+        status_ativo = EXCLUDED.status_ativo
+      RETURNING id_usuario;
+    `);
+    results.usuarios = `Migrados ${q3.rows.length} usuarios`;
+  } catch (e) {
+    results.usuarios_error = e.message;
+  }
+
+  // 4. Teste Coletas
+  try {
+    const q4 = await pool.query(`
+      INSERT INTO tb_coleta_automatizada (
+        id_coleta, id_estabelecimento, id_produto, data_hora_extracao, preco_extraido, data_emissao_nfe, 
+        link_comprovante_nfe, status_validacao, alerta_outlier, motivo_alerta, raw_payload, created_at
+      )
+      SELECT 
+        pc.id,
+        pc.estabelecimento_id,
+        pc.produto_id,
+        COALESCE(pc.data_coleta, NOW()),
+        pc.preco_final_coletado,
+        pc.data_emissao_nfe,
+        NULL,
+        CASE 
+          WHEN pc.status_conferencia = 'CONFERIDO' THEN 'VALIDADO'
+          WHEN pc.status_conferencia = 'NAO_ENCONTRADO' THEN 'NAO_ENCONTRADO'
+          WHEN pc.status_conferencia = 'DESCARTADO' THEN 'REJEITADO'
+          ELSE 'PENDENTE'
+        END,
+        COALESCE(pc.alerta_outlier, FALSE),
+        pc.motivo_alerta,
+        pc.raw_payload,
+        COALESCE(pc.data_coleta, NOW())
+      FROM precos_coletados pc
+      WHERE pc.preco_final_coletado IS NOT NULL
+      ON CONFLICT (id_coleta) DO NOTHING
+      RETURNING id_coleta;
+    `);
+    results.coletas = `Migradas ${q4.rows.length} coletas`;
+  } catch (e) {
+    results.coletas_error = e.message;
+  }
+
+  // Contagens finais
+  try {
+    const c1 = await pool.query('SELECT COUNT(*) FROM tb_estabelecimento');
+    const c2 = await pool.query('SELECT COUNT(*) FROM tb_produto_dieese');
+    const c3 = await pool.query('SELECT COUNT(*) FROM tb_usuario');
+    const c4 = await pool.query('SELECT COUNT(*) FROM tb_coleta_automatizada');
+    const c5 = await pool.query('SELECT COUNT(*) FROM tb_validacao_critica');
+    results.contagens = {
+      tb_estabelecimento: c1.rows[0].count,
+      tb_produto_dieese: c2.rows[0].count,
+      tb_usuario: c3.rows[0].count,
+      tb_coleta_automatizada: c4.rows[0].count,
+      tb_validacao_critica: c5.rows[0].count
+    };
+  } catch (e) {
+    results.contagens_error = e.message;
+  }
+
+  res.json({ success: true, results });
 });
 
 app.listen(PORT, async () => {
